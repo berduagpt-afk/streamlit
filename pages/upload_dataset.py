@@ -2,6 +2,10 @@ import io
 import pandas as pd
 import streamlit as st
 
+if not st.session_state.get("logged_in", False):
+    st.error("Silakan login dulu untuk mengakses halaman ini.")
+    st.stop()
+    
 st.title("📂 Upload Dataset")
 st.caption("Format yang didukung: CSV / Excel. Kolom minimal: **isi** (deskripsi), **id_bugtrack** (bisa diekstrak tanggal).")
 
