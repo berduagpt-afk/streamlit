@@ -11,9 +11,9 @@ if not st.session_state.get("logged_in", False):
 DJP_BLUE = "#0B3A82"
 DJP_GOLD = "#FFC20E"
 BG_PANEL = "#F6F7FB"
-BORDER    = "#E5E7EB"
-TEXT      = "#0F172A"
-MUTED     = "#64748B"
+BORDER   = "#E5E7EB"
+TEXT     = "#0F172A"
+MUTED    = "#64748B"
 
 # --- Styling Global ---
 st.markdown(f"""
@@ -28,6 +28,7 @@ st.markdown(f"""
   --muted: {MUTED};
 }}
 .hero {{
+  position: relative;
   padding: 2rem 1.5rem;
   border-radius: 18px;
   background:
@@ -35,6 +36,7 @@ st.markdown(f"""
     linear-gradient(135deg, color-mix(in oklab, var(--djp-blue) 85%, #0a2e66) 0%, var(--djp-blue) 65%, color-mix(in oklab, var(--djp-gold) 80%, #fff) 120%);
   border: 1px solid var(--border);
   color: white;
+  overflow: hidden;
 }}
 .hero h1 {{ margin: 0 0 .25rem 0; font-size: 2rem; line-height: 1.1; font-weight: 800; }}
 .hero p  {{ margin: 0 0 .75rem 0; color: rgba(255,255,255,.9); font-size:1rem; }}
@@ -44,7 +46,8 @@ st.markdown(f"""
   background: var(--surface);
   border: 1px solid var(--border);
   border-top: 4px solid var(--djp-gold);
-  border-radius: 16px; padding: 1rem;
+  border-radius: 16px;
+  padding: 1rem;
 }}
 .kpi-card .label {{ color: var(--muted); font-size:.9rem; }}
 .kpi-card .value {{ font-size: 1.4rem; font-weight: 700; color: var(--text); }}
@@ -79,9 +82,30 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# --- HERO ---
+# --- HERO SECTION ---
 st.markdown('<div class="hero">', unsafe_allow_html=True)
-col1, col2 = st.columns([1.8,1])
+
+# Tambahkan logo DJP minimalis SVG di pojok kanan atas
+st.markdown(f"""
+<div class="hero-logo">
+  <svg viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="djplogo" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="{DJP_BLUE}" />
+        <stop offset="100%" stop-color="{DJP_GOLD}" />
+      </linearGradient>
+    </defs>
+    <!-- bentuk perisai -->
+    <path d="M32 4 C46 4 60 10 60 24 v18 c0 14-12 24-28 30C16 66 4 56 4 42V24C4 10 18 4 32 4z"
+          fill="url(#djplogo)" stroke="white" stroke-width="2"/>
+    <!-- garis diagonal -->
+    <path d="M16 26 l32 0 M16 34 l32 0 M16 42 l24 0"
+          stroke="white" stroke-width="3" stroke-linecap="round"/>
+  </svg>
+</div>
+""", unsafe_allow_html=True)
+
+col1, col2 = st.columns([1.8, 1])
 with col1:
     st.markdown("<h1>Incident Labeling • DJP Prototype</h1>", unsafe_allow_html=True)
     st.markdown("<p>Sistem pelabelan otomatis tiket insiden berulang menggunakan pendekatan Sintaksis (TF-IDF) dan Semantik (IndoBERT) di lingkungan DJP.</p>", unsafe_allow_html=True)
@@ -126,6 +150,7 @@ with col2:
       </g>
     </svg>
     """, unsafe_allow_html=True)
+
 st.markdown('</div>', unsafe_allow_html=True)
 
 # --- KPI Ringkas ---
@@ -142,7 +167,11 @@ for label, value in [
     ("Outlier (%)", f"{(n_outliers/n_tickets*100):.1f}%" if n_tickets and n_outliers else "—"),
     ("Terakhir diproses", last_update or "—"),
 ]:
-    st.markdown(f'<div class="kpi-card"><div class="label">{label}</div><div class="value">{value}</div></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="kpi-card">'
+        f'<div class="label">{label}</div>'
+        f'<div class="value">{value}</div>'
+        f'</div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
 # --- Panduan Alur Kerja ---
@@ -163,6 +192,6 @@ else:
     with st.expander("Cuplikan 5 baris pertama dataset"):
         st.dataframe(df.head())
 
-# --- Footer ---
+# --- FOOTER ---
 st.markdown("---")
 st.caption(f"© {datetime.now().year} • Prototype Tesis Achmad Luthfi • Tema: Direktorat Jenderal Pajak (Biru–Emas)")
