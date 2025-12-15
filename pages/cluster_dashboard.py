@@ -1,174 +1,270 @@
 # pages/cluster_dashboard.py
-import re
-from datetime import datetime
+# Analisis Clustering TF-IDF + KMeans dari PostgreSQL (schema: lasis_djp)
+# Versi dengan 2 mode pengolahan data + datepicker horizontal yang selalu muncul
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
+from datetime import datetime, date
+from sqlalchemy import create_engine
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 
-# st.set_page_config(page_title="Incident Ticket Clusters", page_icon=":bar_chart:", layout="wide")
-st.title("Incident Ticket Clusters by Application")
-st.caption("Prototype ringkas: filter aplikasi → clustering TF-IDF → topik cluster → bubble timeline → tabel tiket.")
+# ======================================================
+# 🔐 KONEKSI DATABASE
+# ======================================================
+def get_connection():
+    cfg = st.secrets["connections"]["postgres"]
+    url = (
+        f"postgresql+psycopg2://{cfg['username']}:{cfg['password']}"
+        f"@{cfg['host']}:{cfg['port']}/{cfg['database']}"
+    )
+    return create_engine(url)
 
-# ---------- Ambil data dari session ----------
-df = st.session_state.get("df_clean")  # hasil preprocessing
-if df is None:
-    df = st.session_state.get("df_raw") or st.session_state.get("dataset")
+@st.cache_data(show_spinner=False)
+def load_from_db(table_name="incident_clean", schema="lasis_djp", limit=None):
+    engine = get_connection()
+    query = f'SELECT * FROM "{schema}"."{table_name}"'
+    if limit:
+        query += f" LIMIT {limit}"
+    df = pd.read_sql_query(query, con=engine)
+    engine.dispose()
+    return df
 
-if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-    st.warning("Dataset belum tersedia. Upload & jalankan preprocessing terlebih dahulu.")
-    st.stop()
+def save_to_db(df, table_name="incident_cluster", schema="lasis_djp"):
+    engine = get_connection()
+    df.to_sql(table_name, engine, schema=schema, if_exists="replace", index=False)
+    engine.dispose()
 
-# ---------- Pastikan kolom-kolom yang dibutuhkan ----------
-text_col = "tokens_str" if "tokens_str" in df.columns else ("Deskripsi_Bersih" if "Deskripsi_Bersih" in df.columns else "isi")
-if text_col not in df.columns:
-    st.error("Tidak menemukan kolom teks. Harus ada salah satu dari: tokens_str / Deskripsi_Bersih / isi.")
-    st.stop()
+# ======================================================
+# 🧭 PAGE SETUP
+# ======================================================
+st.title("📊 Incident Ticket Clusters (TF-IDF + KMeans)")
+st.caption("Analisis topik otomatis dari tabel `lasis_djp.incident_clean` menggunakan TF-IDF dan K-Means clustering.")
 
-# kolom tanggal: timestamp dari preprocessing paling diprioritaskan
-if "timestamp" in df.columns:
-    date_col = "timestamp"
-else:
-    # coba ekstrak dari id_bugtrack (14 digit pertama) bila ada
-    date_col = None
-    if "id_bugtrack" in df.columns:
-        dt = pd.to_datetime(df["id_bugtrack"].astype(str).str.slice(0, 14), format="%Y%m%d%H%M%S", errors="coerce")
-        if dt.notna().any():
-            df = df.copy()
-            df["timestamp"] = dt
-            date_col = "timestamp"
-
-# kolom ID tiket & pembuat
-id_col = "no_tiket" if "no_tiket" in df.columns else ("id_bugtrack" if "id_bugtrack" in df.columns else None)
-creator_col = "nama_kpp_pengirim" if "nama_kpp_pengirim" in df.columns else None
-svc_col = "seksi_kategori" if "seksi_kategori" in df.columns else None
-prio_col = "priority" if "priority" in df.columns else None  # mungkin belum ada
-
-# "Application" = kategori (fallback ke seksi_kategori)
-app_base = "kategori" if "kategori" in df.columns else (svc_col if svc_col in df.columns else None)
-if app_base is None:
-    st.error("Tidak ada kolom 'kategori' atau 'seksi_kategori' untuk dijadikan filter aplikasi.")
-    st.stop()
-
-# ---------- Sidebar parameter ----------
+# ======================================================
+# ⚙️ SIDEBAR PARAMETER
+# ======================================================
 with st.sidebar:
-    st.header("⚙️ Pengaturan")
-    apps = ["(Semua)"] + sorted([x for x in df[app_base].astype(str).unique() if x and x != "nan"])
-    app_selected = st.selectbox("Application Name", apps, index=0)
-    k_clusters = st.slider("Jumlah cluster (KMeans)", 2, 12, 4, 1)
+    st.header("⚙️ Pengaturan Clustering")
+
+    process_mode = st.radio(
+        "Mode Pengolahan Data",
+        ["Berdasarkan Jumlah Tiket", "Berdasarkan Range Waktu (Tanggal Submit)"],
+        index=0,
+    )
+
+    sample_limit = st.number_input("Ambil maksimal data", 0, 50000, 10000, step=5000, help="0 = ambil semua baris")
+    k_clusters = st.slider("Jumlah cluster (KMeans)", 2, 15, 5, 1)
     ngram_choice = st.selectbox("N-gram TF-IDF", ["1", "1–2"], index=1)
     ngram = (1, 1) if ngram_choice == "1" else (1, 2)
-    min_df = st.number_input("min_df (≥ dokumen)", min_value=1, value=2, step=1)
-    max_df = st.slider("max_df (≤ proporsi dokumen)", 0.5, 1.0, 0.95, 0.01)
-    top_terms = st.number_input("Top terms/cluster", 3, 15, 3, 1)
-    run = st.button("🚀 Jalankan")
+    min_df = st.number_input("min_df (dokumen minimal)", 1, 100, 2, 1)
+    max_df = st.slider("max_df (proporsi dokumen maks)", 0.5, 1.0, 0.95, 0.01)
+    top_terms = st.number_input("Top terms/cluster", 3, 15, 5, 1)
+    save_db = st.checkbox("Simpan hasil ke PostgreSQL", True)
+    st.markdown("---")
 
-# ---------- Filter aplikasi ----------
-if app_selected != "(Semua)":
-    df_view = df[df[app_base].astype(str) == app_selected].copy()
-else:
-    df_view = df.copy()
+# ======================================================
+# 📦 LOAD DATA
+# ======================================================
+with st.spinner("📦 Mengambil data dari database..."):
+    try:
+        df = load_from_db("incident_clean", "lasis_djp", limit=sample_limit or None)
+        st.success(f"Berhasil memuat {len(df):,} baris.")
+    except Exception as e:
+        st.error(f"Gagal memuat data: {e}")
+        st.stop()
 
-st.write(f"**Dataset aktif:** {len(df_view):,} tiket | Teks: `{text_col}` | Aplikasi: `{app_selected}`")
-
-if not run:
-    st.info("Atur parameter di sidebar lalu klik **Jalankan**.")
+if df.empty:
+    st.warning("Dataset kosong. Pastikan tabel `lasis_djp.incident_clean` memiliki data.")
     st.stop()
 
-if len(df_view) < k_clusters:
-    st.warning(f"Baris data ({len(df_view)}) lebih kecil dari jumlah cluster (k={k_clusters}). Kurangi K atau perbesar data.")
+# ======================================================
+# 🧮 VALIDASI KOLOM
+# ======================================================
+text_col = "tokens_str" if "tokens_str" in df.columns else "Deskripsi_Bersih" if "Deskripsi_Bersih" in df.columns else None
+if not text_col:
+    st.error("Kolom teks tidak ditemukan (harus ada `tokens_str` atau `Deskripsi_Bersih`).")
     st.stop()
 
-# ---------- TF-IDF + KMeans clustering ----------
-texts = df_view[text_col].fillna("").astype(str).tolist()
-vec = TfidfVectorizer(
-    ngram_range=ngram,
-    min_df=min_df,
-    max_df=(None if max_df >= 0.9999 else max_df),
-    sublinear_tf=True,
-    use_idf=True,
-    norm="l2",
-    token_pattern=r"(?u)\b\w+\b",
-    lowercase=False,  # sudah dibersihkan di preprocessing
-)
-X = vec.fit_transform(texts)
+id_col = "Incident_Number" if "Incident_Number" in df.columns else None
+date_col = "tgl_submit" if "tgl_submit" in df.columns else None
+
+# ======================================================
+# 📅 FILTER RANGE WAKTU (SELALU TAMPIL SAAT MODE RANGE)
+# ======================================================
+if process_mode == "Berdasarkan Range Waktu (Tanggal Submit)":
+    st.sidebar.markdown("### 📅 Rentang Waktu Analisis")
+
+    # Styling biru DJP
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDateInput"] label {
+            color: white !important;
+            background-color: #0B3A82;
+            padding: 3px 8px;
+            border-radius: 6px;
+            font-weight: 600;
+            margin-bottom: 4px;
+            display: inline-block;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        start_date = st.date_input("Start date", value=date(2023, 1, 1))
+    with col2:
+        end_date = st.date_input("End date", value=date.today())
+
+    if start_date > end_date:
+        st.error("❌ Tanggal mulai tidak boleh setelah tanggal selesai.")
+        st.stop()
+
+    # Filter dataset bila kolom tanggal ada
+    if date_col and date_col in df.columns:
+        df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df[(df[date_col].dt.date >= start_date) & (df[date_col].dt.date <= end_date)]
+        st.info(f"📆 Analisis data dari **{start_date}** hingga **{end_date}** ({len(df):,} tiket).")
+    else:
+        st.warning("Kolom `tgl_submit` tidak ditemukan, filter waktu dilewati.")
+
+if df.empty:
+    st.warning("Tidak ada data yang sesuai rentang waktu.")
+    st.stop()
+
+# ======================================================
+# 🧼 PRA-PROSES TEKS
+# ======================================================
+df[text_col] = df[text_col].fillna("").astype(str)
+df["text_len"] = df[text_col].str.len()
+df_valid = df[df["text_len"] >= 2].copy()
+
+if df_valid.empty:
+    st.error("❌ Semua dokumen kosong atau terlalu pendek untuk diproses.")
+    st.stop()
+
+texts = df_valid[text_col].tolist()
+st.info(f"Menjalankan TF-IDF pada {len(texts):,} dokumen valid ...")
+
+# ======================================================
+# 🔠 TF-IDF + K-MEANS
+# ======================================================
+try:
+    vec = TfidfVectorizer(
+        ngram_range=ngram,
+        min_df=min_df,
+        max_df=(None if max_df >= 0.9999 else max_df),
+        sublinear_tf=True,
+        use_idf=True,
+        norm="l2",
+        token_pattern=r"(?u)\b\w+\b",
+        lowercase=False,
+    )
+    X = vec.fit_transform(texts)
+except ValueError as e:
+    st.error(f"Gagal membentuk TF-IDF: {e}")
+    st.stop()
+
+if X.shape[1] == 0:
+    st.error("❌ Tidak ada fitur yang terbentuk. Mungkin semua teks hanya berisi stopword.")
+    st.stop()
+
 km = KMeans(n_clusters=k_clusters, n_init="auto", random_state=42)
 labels = km.fit_predict(X)
+df_valid["cluster_label"] = labels
 
-df_view = df_view.reset_index(drop=True)
-df_view["cluster_label"] = labels
-
-# Top terms per cluster dari centroid
+# ======================================================
+# 📋 RINGKASAN CLUSTER
+# ======================================================
 feature_names = vec.get_feature_names_out()
 def top_terms_of_cluster(cidx, n=top_terms):
     center = km.cluster_centers_[cidx]
     idx = np.argsort(center)[-n:][::-1]
     return ", ".join(feature_names[idx])
 
-cluster_topics = {c: top_terms_of_cluster(c, n=top_terms) for c in range(k_clusters)}
-df_view["cluster_topic"] = df_view["cluster_label"].map(cluster_topics)
+cluster_topics = {c: top_terms_of_cluster(c) for c in range(k_clusters)}
+df_valid["cluster_topic"] = df_valid["cluster_label"].map(cluster_topics)
 
-# ---------- Summary table (kiri) ----------
+st.subheader("📋 Ringkasan Cluster")
 summary = (
-    df_view.groupby("cluster_label")
+    df_valid.groupby("cluster_label")
     .size()
-    .rename("cluster_size")
+    .rename("Jumlah Tiket")
     .reset_index()
-    .sort_values("cluster_label")
+    .sort_values("Jumlah Tiket", ascending=False)
 )
-summary["cluster_topic"] = summary["cluster_label"].map(cluster_topics)
+summary["Cluster Topic"] = summary["cluster_label"].map(cluster_topics)
+st.dataframe(summary, use_container_width=True, hide_index=True)
 
-left, right = st.columns([0.38, 0.62])
-with left:
-    st.subheader("Ringkasan Cluster")
-    st.dataframe(summary.rename(columns={
-        "cluster_label": "Cluster Label",
-        "cluster_size": "Cluster Size",
-        "cluster_topic": "Cluster Topic",
-    }), use_container_width=True, hide_index=True)
+# ======================================================
+# 📊 DISTRIBUSI CLUSTER (BAR CHART)
+# ======================================================
+st.subheader("📊 Distribusi Cluster Berdasarkan Jumlah Tiket")
+dist = (
+    df_valid.groupby(["cluster_label", "cluster_topic"])
+    .size()
+    .reset_index(name="Jumlah Tiket")
+)
+bar_chart = (
+    alt.Chart(dist)
+    .mark_bar()
+    .encode(
+        x=alt.X("Jumlah Tiket:Q", title="Jumlah Tiket"),
+        y=alt.Y("cluster_topic:N", sort="-x", title="Cluster Topic"),
+        color="cluster_label:N",
+        tooltip=["cluster_label:N", "cluster_topic:N", "Jumlah Tiket:Q"],
+    )
+)
+st.altair_chart(bar_chart, use_container_width=True)
 
-# ---------- Bubble timeline (kanan) ----------
-with right:
-    st.subheader("Timeline Cluster (Bulanan)")
-    if date_col is None or df_view[date_col].isna().all():
-        st.info("Kolom tanggal tidak tersedia, timeline disembunyikan.")
-    else:
-        tmp = df_view[[date_col, "cluster_label"]].copy()
-        tmp["month"] = tmp[date_col].dt.to_period("M").dt.to_timestamp()
-        g = tmp.groupby(["month", "cluster_label"]).size().reset_index(name="count")
-        g["cluster_topic"] = g["cluster_label"].map(cluster_topics)
+# ======================================================
+# 🕒 TIMELINE CLUSTER PER BULAN
+# ======================================================
+if date_col and pd.to_datetime(df_valid[date_col], errors="coerce").notna().any():
+    st.subheader("📈 Timeline Cluster per Bulan (Berdasarkan Tanggal Submit)")
+    df_valid["month"] = pd.to_datetime(df_valid[date_col], errors="coerce").dt.to_period("M").dt.to_timestamp()
+    g = df_valid.groupby(["month", "cluster_label"]).size().reset_index(name="Jumlah Tiket")
+    g["Cluster Topic"] = g["cluster_label"].map(cluster_topics)
 
-        chart = alt.Chart(g).mark_circle().encode(
-            x=alt.X("month:T", title="Month"),
-            y=alt.Y("cluster_topic:N", title="Cluster Topic"),
-            size=alt.Size("count:Q", legend=None),
-            tooltip=["month:T", "cluster_label:N", "cluster_topic:N", "count:Q"],
-            color=alt.Color("cluster_label:N", legend=None),
-        ).properties(height=300)
-        st.altair_chart(chart, use_container_width=True)
+    chart = (
+        alt.Chart(g)
+        .mark_circle()
+        .encode(
+            x=alt.X("month:T", title="Bulan"),
+            y=alt.Y("Cluster Topic:N", title="Cluster Topic"),
+            size="Jumlah Tiket:Q",
+            color="cluster_label:N",
+            tooltip=["month:T", "Cluster Topic:N", "Jumlah Tiket:Q"],
+        )
+    )
+    st.altair_chart(chart, use_container_width=True)
+else:
+    st.info("Kolom tanggal tidak tersedia atau kosong, timeline tidak ditampilkan.")
 
-# ---------- Detail tiket ----------
-st.subheader("Daftar Tiket")
-cols = {
-    "Ticket ID": df_view[id_col] if id_col else pd.Series(["–"] * len(df_view)),
-    "Ticket Creator": df_view[creator_col] if creator_col else pd.Series(["–"] * len(df_view)),
-    "Resolution Notes": df_view["isi"] if "isi" in df_view.columns else df_view[text_col],
-    "Cluster Label": df_view["cluster_label"],
-    "Cluster Topic": df_view["cluster_topic"],
-    "Service Line": df_view[svc_col] if svc_col else pd.Series(["–"] * len(df_view)),
-    "Priority": df_view[prio_col] if prio_col else pd.Series(["–"] * len(df_view)),
-}
-table = pd.DataFrame(cols)
-st.dataframe(table, use_container_width=True, hide_index=True)
+# ======================================================
+# 💾 SIMPAN & DOWNLOAD
+# ======================================================
+df_valid["tgl_clustered"] = datetime.now()
+if "tgl_submit" in df_valid.columns:
+    df_valid["tgl_submit"] = pd.to_datetime(df_valid["tgl_submit"], errors="coerce")
 
-# Unduh hasil
-out = df_view.copy()
+if save_db:
+    try:
+        with st.spinner("💾 Menyimpan hasil clustering ke database..."):
+            save_to_db(df_valid, "incident_cluster", "lasis_djp")
+        st.success("✅ Hasil clustering berhasil disimpan ke database.")
+    except Exception as e:
+        st.error(f"Gagal menyimpan ke database: {e}")
+
+csv = df_valid.to_csv(index=False).encode("utf-8")
 st.download_button(
     "📥 Download Hasil Clustering (CSV)",
-    data=out.to_csv(index=False).encode("utf-8"),
+    data=csv,
     file_name="incident_clusters.csv",
     mime="text/csv",
 )

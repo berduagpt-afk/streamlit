@@ -1,199 +1,153 @@
 # pages/exec_summary.py
-import re
-from datetime import datetime
+# Executive Summary dari hasil clustering di PostgreSQL (schema: lasis_djp)
 
-import numpy as np
 import pandas as pd
 import streamlit as st
+from sqlalchemy import create_engine
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.cluster import KMeans
 
-st.title("Executive Summary of Clustering")
-st.caption("Ringkasan tiket insiden: filter → clustering → KPI → tabel eksekutif.")
+# ======================================================
+# 🔐 KONEKSI DATABASE
+# ======================================================
+def get_connection():
+    cfg = st.secrets["connections"]["postgres"]
+    url = (
+        f"postgresql+psycopg2://{cfg['username']}:{cfg['password']}"
+        f"@{cfg['host']}:{cfg['port']}/{cfg['database']}"
+    )
+    return create_engine(url)
 
-# ------------ Ambil data dari session ------------
-df = st.session_state.get("df_clean")
-if df is None:
-    df = st.session_state.get("df_raw")
-if df is None:
-    df = st.session_state.get("dataset")
+@st.cache_data(show_spinner=False)
+def load_from_db(table_name="incident_cluster", schema="lasis_djp", limit=None):
+    engine = get_connection()
+    query = f'SELECT * FROM "{schema}"."{table_name}"'
+    if limit:
+        query += f" LIMIT {limit}"
+    df = pd.read_sql_query(query, con=engine)
+    engine.dispose()
+    return df
 
-if df is None or not isinstance(df, pd.DataFrame) or df.empty:
-    st.warning("Dataset belum tersedia. Upload & jalankan preprocessing terlebih dahulu.")
+# ======================================================
+# 🧭 PAGE SETUP
+# ======================================================
+st.title("📊 Executive Summary of Incident Clustering")
+st.caption("Ringkasan tiket insiden dari lasis_djp.incident_cluster — KPI utama, topik cluster, dan tabel aplikasi.")
+
+# ======================================================
+# 📦 AMBIL DATA DARI DATABASE
+# ======================================================
+with st.spinner("📦 Mengambil data clustering dari database..."):
+    try:
+        df = load_from_db("incident_cluster", "lasis_djp")
+        st.success(f"Berhasil memuat {len(df):,} baris dari lasis_djp.incident_cluster")
+    except Exception as e:
+        st.error(f"Gagal mengambil data: {e}")
+        st.stop()
+
+if df.empty:
+    st.warning("Dataset kosong. Pastikan tabel lasis_djp.incident_cluster sudah diisi dari proses clustering.")
     st.stop()
 
-# ------------ Deteksi kolom penting ------------
-text_col = "tokens_str" if "tokens_str" in df.columns else ("Deskripsi_Bersih" if "Deskripsi_Bersih" in df.columns else "isi")
-if text_col not in df.columns:
-    st.error("Tidak menemukan kolom teks. Harus ada salah satu dari: tokens_str / Deskripsi_Bersih / isi.")
+# ======================================================
+# 🧮 VALIDASI KOLOM
+# ======================================================
+text_col = "Deskripsi_Bersih" if "Deskripsi_Bersih" in df.columns else (
+    "tokens_str" if "tokens_str" in df.columns else None
+)
+if not text_col:
+    st.error("Kolom teks tidak ditemukan (harus ada Deskripsi_Bersih atau tokens_str).")
     st.stop()
 
-# tanggal
-date_col = None
-if "timestamp" in df.columns:
-    date_col = "timestamp"
-elif "id_bugtrack" in df.columns:
-    dt = pd.to_datetime(df["id_bugtrack"].astype(str).str.slice(0, 14), format="%Y%m%d%H%M%S", errors="coerce")
-    if dt.notna().any():
-        df = df.copy()
-        df["timestamp"] = dt
-        date_col = "timestamp"
-
-# kandidat kolom kategori/aplikasi/service line/team/owner
-def first_present(*cols):
-    for c in cols:
-        if c and c in df.columns:
-            return c
-    return None
-
-application_col = first_present("kategori", "aplikasi", "application", "app", "seksi_kategori")
-service_line_col = first_present("seksi_kategori", "service_line", "layanan")
-solutions_team_col = first_present("solutions_team", "unit_penanganan", "tim_solusi", "unit", "nama_kpp_pengirim")
-owner_col = first_present("application_owner", "pemilik_aplikasi", "owner", "penanggung_jawab", "nama_kpp_pengirim")
-
-if application_col is None:
-    st.error("Tidak ada kolom untuk 'Application' (coba tambahkan 'kategori' atau 'aplikasi').")
+app_col = "modul" if "modul" in df.columns else (
+    "kategori" if "kategori" in df.columns else None
+)
+if not app_col:
+    st.error("Tidak ditemukan kolom aplikasi (misal: modul/kategori).")
     st.stop()
 
-# ------------ Sidebar (filter & parameter) ------------
+id_col = "Incident_Number" if "Incident_Number" in df.columns else None
+cluster_col = "cluster_label" if "cluster_label" in df.columns else None
+topic_col = "cluster_topic" if "cluster_topic" in df.columns else None
+
+# ======================================================
+# ⚙️ SIDEBAR FILTER
+# ======================================================
 with st.sidebar:
     st.header("⚙️ Filter & Parameter")
-
-    # pilih kolom yang dipakai
-    application_col = st.selectbox("Kolom Application", [application_col] + [c for c in df.columns if c not in [application_col]], index=0)
-    service_line_col = st.selectbox("Kolom Service Line", ["(None)"] + list(df.columns), index=(1 if service_line_col else 0))
-    solutions_team_col = st.selectbox("Kolom Solutions Team", ["(None)"] + list(df.columns), index=(1 if solutions_team_col else 0))
-    owner_col = st.selectbox("Kolom Application Owner", ["(None)"] + list(df.columns), index=(1 if owner_col else 0))
-
-    # nilai filter
-    def pick_values(colname, label):
-        if not colname or colname == "(None)":
-            return None, None
-        vals = ["All"] + sorted([str(x) for x in df[colname].dropna().astype(str).unique()])
-        return colname, st.selectbox(label, vals, index=0)
-
-    sl_col, sl_val = pick_values(service_line_col, "Service Line")
-    team_col, team_val = pick_values(solutions_team_col, "Solutions Team")
-
-    # parameter clustering
-    st.markdown("---")
-    st.markdown("**Clustering**")
-    k_clusters = st.slider("Jumlah cluster (KMeans)", 2, 50, 12, 1)
-    ngram = st.selectbox("N-gram TF-IDF", ["1", "1–2"], index=1)
-    ngram_range = (1, 1) if ngram == "1" else (1, 2)
-    min_df = st.number_input("min_df (≥ dokumen)", min_value=1, value=2, step=1)
-    max_df = st.slider("max_df (≤ proporsi dokumen)", 0.5, 1.0, 0.95, 0.01)
-    top_terms = st.number_input("Top terms/cluster", 3, 15, 3, 1)
+    limit = st.number_input("Ambil maksimal data (0=semua)", 0, 50000, 0, step=5000)
+    app_selected = st.selectbox(
+        "Filter berdasarkan Application (modul/kategori)",
+        ["(Semua)"] + sorted(df[app_col].dropna().astype(str).unique().tolist())
+    )
     top_rows = st.number_input("Top baris per tabel", 3, 50, 10, 1)
-
-    # hitung technical incidents (opsional)
-    st.markdown("---")
-    st.markdown("**Technical Incidents (opsional)**")
-    tech_col = st.selectbox("Kolom tipe insiden", ["(None)"] + list(df.columns), index=0)
-    tech_vals = []
-    if tech_col != "(None)":
-        tech_vals = st.multiselect("Nilai dianggap 'technical'", sorted([str(x) for x in df[tech_col].dropna().astype(str).unique()]))
-
-    run = st.button("🚀 Jalankan", use_container_width=True)
-
-# ------------ Terapkan filter ------------
-df_view = df.copy()
-if sl_col and sl_val and sl_val != "All":
-    df_view = df_view[df_view[sl_col].astype(str) == sl_val]
-if team_col and team_val and team_val != "All":
-    df_view = df_view[df_view[team_col].astype(str) == team_val]
-
-st.write(f"**Dataset aktif:** {len(df_view):,} tiket | Application: `{application_col}` | Text: `{text_col}`")
+    run = st.button("🚀 Tampilkan Ringkasan", use_container_width=True)
 
 if not run:
-    st.info("Atur parameter di sidebar lalu klik **Jalankan**.")
+    st.info("Atur parameter di sidebar lalu klik **Tampilkan Ringkasan**.")
     st.stop()
 
-if len(df_view) < k_clusters:
-    st.warning(f"Baris data ({len(df_view)}) < jumlah cluster (k={k_clusters}). Kurangi K atau perbesar data.")
+if limit and limit > 0:
+    df = df.head(limit)
+
+if app_selected != "(Semua)":
+    df = df[df[app_col].astype(str) == app_selected]
+    st.info(f"Menampilkan data untuk application **{app_selected}** ({len(df):,} tiket).")
+
+if df.empty:
+    st.warning("Tidak ada data yang sesuai filter.")
     st.stop()
 
-# ------------ TF-IDF + KMeans (ringkas & cepat) ------------
-texts = df_view[text_col].fillna("").astype(str).tolist()
-vec = TfidfVectorizer(
-    ngram_range=ngram_range,
-    min_df=min_df,
-    max_df=(None if max_df >= 0.9999 else max_df),
-    sublinear_tf=True,
-    use_idf=True,
-    norm="l2",
-    lowercase=False,
-    token_pattern=r"(?u)\b\w+\b",
+# ======================================================
+# 🧾 KPI Cards
+# ======================================================
+total_tickets = len(df)
+n_clusters = df[cluster_col].nunique() if cluster_col in df.columns else 0
+avg_tickets_per_cluster = (
+    df.groupby(cluster_col).size().mean() if cluster_col in df.columns else 0
 )
-X = vec.fit_transform(texts)
 
-km = KMeans(n_clusters=k_clusters, n_init="auto", random_state=42)
-labels = km.fit_predict(X)
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Incident Tickets", f"{total_tickets:,}")
+col2.metric("Clusters Identified", f"{n_clusters:,}")
+col3.metric("Avg Tickets / Cluster", f"{avg_tickets_per_cluster:.1f}")
 
-df_view = df_view.reset_index(drop=True)
-df_view["cluster_label"] = labels
-
-# top terms untuk nama topik cluster
-feature_names = vec.get_feature_names_out()
-def topic_of_cluster(cid: int, n: int) -> str:
-    center = km.cluster_centers_[cid]
-    idx = np.argsort(center)[-n:][::-1]
-    return ", ".join(feature_names[idx])
-
-cluster_topic = {c: topic_of_cluster(c, top_terms) for c in range(k_clusters)}
-df_view["cluster_topic"] = df_view["cluster_label"].map(cluster_topic)
-
-# ------------ KPI cards ------------
-total_incident = len(df_view)
-if tech_col != "(None)" and tech_vals:
-    tech_incident = int(df_view[df_view[tech_col].astype(str).isin(tech_vals)].shape[0])
-else:
-    tech_incident = total_incident  # fallback
-clusters_identified = int(df_view["cluster_label"].nunique())
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Incident Tickets", f"{total_incident:,}")
-c2.metric("Technical Incidents", f"{tech_incident:,}")
-c3.metric("Clusters Identified", f"{clusters_identified:,}")
-
-# ------------ Tabel: Clusters with the most Incidents ------------
-app = application_col
-by_app_cluster = (
-    df_view.groupby([app, "cluster_label"])
-    .size()
-    .rename("Cluster Size")
-    .reset_index()
-    .sort_values("Cluster Size", ascending=False)
-)
-by_app_cluster["Cluster Topic"] = by_app_cluster["cluster_label"].map(cluster_topic)
-table_left = by_app_cluster.rename(columns={app: "Application"})[
-    ["Application", "Cluster Size", "Cluster Topic"]
-].head(top_rows)
-
-# ------------ Tabel: Applications with the most Clusters ------------
-# hitung berapa banyak cluster unik yang muncul per application
-app_cluster_count = (
-    df_view.groupby(app)["cluster_label"].nunique().rename("Number of Clusters").reset_index()
-)
-# owner (opsional)
-if owner_col and owner_col != "(None)" and owner_col in df_view.columns:
-    owner_map = (
-        df_view.groupby(app)[owner_col].agg(lambda x: x.dropna().astype(str).mode().iloc[0] if not x.dropna().empty else "")
+# ======================================================
+# 🧩 TABLE 1: Clusters with Most Tickets
+# ======================================================
+if cluster_col in df.columns:
+    cluster_counts = (
+        df.groupby(cluster_col).size().rename("Cluster Size").reset_index()
+        .sort_values("Cluster Size", ascending=False)
     )
-    app_cluster_count["Application Owner"] = app_cluster_count[app].map(owner_map)
+    if topic_col in df.columns:
+        cluster_counts["Cluster Topic"] = cluster_counts[cluster_col].map(
+            df.drop_duplicates(cluster_col).set_index(cluster_col)[topic_col]
+        )
+    table_left = cluster_counts.head(top_rows)
 else:
-    app_cluster_count["Application Owner"] = ""
+    table_left = pd.DataFrame(columns=["Cluster", "Cluster Size", "Cluster Topic"])
 
-table_right = app_cluster_count.rename(columns={app: "Application"})[
-    ["Application", "Number of Clusters", "Application Owner"]
-].sort_values("Number of Clusters", ascending=False).head(top_rows)
+# ======================================================
+# 🧩 TABLE 2: Applications with Most Clusters
+# ======================================================
+if app_col in df.columns and cluster_col in df.columns:
+    app_cluster_count = (
+        df.groupby(app_col)[cluster_col].nunique().rename("Number of Clusters").reset_index()
+        .sort_values("Number of Clusters", ascending=False)
+    )
+    table_right = app_cluster_count.head(top_rows)
+else:
+    table_right = pd.DataFrame(columns=["Application", "Number of Clusters"])
 
-# ------------ Layout tabel ------------
-st.markdown("### ")
-lcol, rcol = st.columns(2)
+# ======================================================
+# 📊 DISPLAY TABLES
+# ======================================================
+st.subheader("📈 Executive Summary Tables")
+left, right = st.columns(2)
 
-with lcol:
-    st.markdown("**Clusters with the most Incidents**")
+with left:
+    st.markdown("**Clusters with the Most Incidents**")
     st.dataframe(table_left, use_container_width=True, hide_index=True)
     st.download_button(
         "⬇️ Download (left table)",
@@ -202,8 +156,8 @@ with lcol:
         mime="text/csv",
     )
 
-with rcol:
-    st.markdown("**Applications with the most Clusters**")
+with right:
+    st.markdown("**Applications with the Most Clusters**")
     st.dataframe(table_right, use_container_width=True, hide_index=True)
     st.download_button(
         "⬇️ Download (right table)",
@@ -212,8 +166,12 @@ with rcol:
         mime="text/csv",
     )
 
-# ------------ Simpan ke session (opsional) ------------
+# ======================================================
+# 💾 SIMPAN KE SESSION
+# ======================================================
 st.session_state["exec_summary_tables"] = {
     "clusters_with_most_incidents": table_left,
     "applications_with_most_clusters": table_right,
 }
+
+st.success("✅ Executive summary berhasil dibuat dari database.")

@@ -1,4 +1,4 @@
-# pages/dashboard.py  — DJP themed
+# pages/home.py — DJP Themed Home Page
 import streamlit as st
 from datetime import datetime
 
@@ -7,7 +7,7 @@ if not st.session_state.get("logged_in", False):
     st.error("Silakan login dulu untuk mengakses halaman ini.")
     st.stop()
 
-# --- Palet warna (bisa disesuaikan kalau ada brand guide resmi) ---
+# --- Palet warna (tema DJP) ---
 DJP_BLUE = "#0B3A82"
 DJP_GOLD = "#FFC20E"
 BG_PANEL = "#F6F7FB"
@@ -15,7 +15,7 @@ BORDER    = "#E5E7EB"
 TEXT      = "#0F172A"
 MUTED     = "#64748B"
 
-# --- Styling ---
+# --- Styling Global ---
 st.markdown(f"""
 <style>
 :root {{
@@ -27,7 +27,6 @@ st.markdown(f"""
   --text: {TEXT};
   --muted: {MUTED};
 }}
-
 .hero {{
   padding: 2rem 1.5rem;
   border-radius: 18px;
@@ -38,7 +37,7 @@ st.markdown(f"""
   color: white;
 }}
 .hero h1 {{ margin: 0 0 .25rem 0; font-size: 2rem; line-height: 1.1; font-weight: 800; }}
-.hero p  {{ margin: 0 0 .75rem 0; color: rgba(255,255,255,.9); }}
+.hero p  {{ margin: 0 0 .75rem 0; color: rgba(255,255,255,.9); font-size:1rem; }}
 
 .kpi-grid {{ display: grid; grid-template-columns: repeat(4,1fr); gap: .75rem; margin-top: .75rem; }}
 .kpi-card {{
@@ -50,13 +49,33 @@ st.markdown(f"""
 .kpi-card .label {{ color: var(--muted); font-size:.9rem; }}
 .kpi-card .value {{ font-size: 1.4rem; font-weight: 700; color: var(--text); }}
 
-.quick a {{
-  display:inline-block; margin:.25rem .5rem .25rem 0; padding:.45rem .75rem;
-  border-radius: 999px; background: #E6EEF8; color: var(--djp-blue);
-  text-decoration:none; border:1px solid #d8e5f6;
+.quick-container {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  margin-top: .75rem;
+}}
+.quick-button {{
+  background: #E6EEF8;
+  color: var(--djp-blue);
+  border: 1px solid #d8e5f6;
+  border-radius: 999px;
+  padding: .45rem .9rem;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.95rem;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  transition: all 0.2s ease;
+}}
+.quick-button:hover {{
+  background: var(--djp-blue);
+  color: white;
+  border-color: var(--djp-blue);
 }}
 .section {{ margin-top: 1.25rem; }}
-.footer {{ color: var(--muted); }}
+.footer {{ color: var(--muted); font-size:0.9rem; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -65,18 +84,22 @@ st.markdown('<div class="hero">', unsafe_allow_html=True)
 col1, col2 = st.columns([1.8,1])
 with col1:
     st.markdown("<h1>Incident Labeling • DJP Prototype</h1>", unsafe_allow_html=True)
-    st.markdown("<p>Kelola dataset tiket, lakukan preprocessing, dan eksplorasi klaster untuk insight yang dapat ditindaklanjuti.</p>", unsafe_allow_html=True)
-    st.write("**Aksi cepat**")
-    st.markdown(
-        '<div class="quick">'
-        + st.page_link("pages/upload_dataset.py", label="Upload Dataset", icon=":material/upload_file:", help="Muat CSV/Excel", use_container_width=False)._repr_html_()
-        + st.page_link("pages/preprocessing.py", label="Preprocessing", icon=":material/cleaning_services:", help="Normalisasi & stemming")._repr_html_()
-        + st.page_link("pages/cluster_dashboard.py", label="Cluster Dashboard", icon=":material/analytics:", help="Visualisasi & label")._repr_html_()
-        + '</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown("<p>Sistem pelabelan otomatis tiket insiden berulang menggunakan pendekatan Sintaksis (TF-IDF) dan Semantik (IndoBERT) di lingkungan DJP.</p>", unsafe_allow_html=True)
+    st.write("**Aksi Cepat**")
+
+    # Tombol Aksi Cepat (tanpa _repr_html_)
+    st.markdown('<div class="quick-container">', unsafe_allow_html=True)
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.page_link("pages/upload_dataset.py", label="Upload Dataset", icon=":material/upload_file:", help="Unggah file CSV/Excel untuk diproses")
+    with col_b:
+        st.page_link("pages/preprocessing.py", label="Preprocessing", icon=":material/cleaning_services:", help="Normalisasi teks dan stemming otomatis")
+    with col_c:
+        st.page_link("pages/cluster_dashboard.py", label="Cluster Dashboard", icon=":material/analytics:", help="Visualisasi klaster dan pelabelan insiden")
+    st.markdown('</div>', unsafe_allow_html=True)
+
 with col2:
-    # Ilustrasi SVG bergaya DJP (bukan logo resmi)
+    # SVG ilustrasi (abstrak DJP)
     st.markdown(f"""
     <svg viewBox="0 0 260 160" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;">
       <defs>
@@ -95,7 +118,6 @@ with col2:
         <rect x="0" y="52" width="140" height="16" rx="6" fill="#ffffff"/>
         <rect x="0" y="78" width="180" height="16" rx="6" fill="#ffffff"/>
       </g>
-      <!-- “perisai” abstrak -->
       <g transform="translate(190,28)">
         <path d="M20 0 C40 0 60 10 60 28 v22 c0 18-20 30-40 36c-20-6-40-18-40-36V28C-0 10 20 0 20 0z" fill="#ffffff" opacity="0.9"/>
         <rect x="10" y="16" width="20" height="6" rx="3" fill="{DJP_BLUE}"/>
@@ -106,7 +128,7 @@ with col2:
     """, unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- KPI ---
+# --- KPI Ringkas ---
 df = st.session_state.get("df")
 n_tickets  = len(df) if df is not None else 0
 n_clusters = st.session_state.get("n_clusters", 0)
@@ -123,18 +145,18 @@ for label, value in [
     st.markdown(f'<div class="kpi-card"><div class="label">{label}</div><div class="value">{value}</div></div>', unsafe_allow_html=True)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- Guide ---
+# --- Panduan Alur Kerja ---
 st.markdown('<div class="section">', unsafe_allow_html=True)
-st.subheader("Alur kerja singkat")
+st.subheader("Alur Kerja Sistem (CRISP-DM)")
 st.markdown("""
-1. :material/upload_file: **Upload Dataset** di *Data Processing › Upload Dataset* (CSV/Excel).
-2. :material/cleaning_services: **Preprocessing** – normalisasi teks, stopword, stemming.
-3. :material/analytics: **Clustering & Labeling** – buka *Dashboard › Cluster Dashboard*.
-4. :material/insights: **Executive Summary** – ringkasan otomatis untuk manajemen.
+1. :material/upload_file: **Upload Dataset** – unggah data insiden LASIS (CSV/Excel).  
+2. :material/cleaning_services: **Preprocessing** – normalisasi teks, tokenisasi, stopword removal, lemmatization.  
+3. :material/analytics: **Clustering & Labeling** – TF-IDF/Cosine Similarity atau IndoBERT + HDBSCAN.  
+4. :material/insights: **Evaluasi & Reporting** – validasi model dan tampilkan ringkasan manajerial.  
 """)
 st.markdown('</div>', unsafe_allow_html=True)
 
-# --- Cuplikan data bila ada ---
+# --- Cuplikan Dataset ---
 if df is None:
     st.info("Belum ada dataset yang dimuat. Mulai dengan **Upload Dataset** terlebih dahulu.")
 else:
@@ -143,4 +165,4 @@ else:
 
 # --- Footer ---
 st.markdown("---")
-st.caption(f"© {datetime.now().year} • Prototype internal • Tema: DJP (biru–emas)")
+st.caption(f"© {datetime.now().year} • Prototype Tesis Achmad Luthfi • Tema: Direktorat Jenderal Pajak (Biru–Emas)")
