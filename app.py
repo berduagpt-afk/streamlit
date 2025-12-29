@@ -109,13 +109,32 @@ upload_dataset = st.Page("pages/upload_dataset.py", title="Upload Dataset", icon
 statistik_dataset = st.Page("pages/statistik_dataset.py", title="Statistik Dataset", icon=":material/monitoring:")
 verifikasi_data = st.Page("pages/verifikasi_data.py", title="Verifikasi Kualitas Data", icon=":material/task_alt:")
 # generate_dataset = st.Page("pages/generate_dataset.py", title="Generate Dataset", icon=":material/upload_file:")
+# Data Preparation
 load_dataset = st.Page("pages/load_dataset.py", title="Load Dataset", icon=":material/database:")
-preprocessing = st.Page("pages/preprocessing.py", title="Preprocessing Data", icon=":material/cleaning_services:")
+# Text Processing
+data_normalization = st.Page("pages/data_preparation/text_processing/data_normalization.py", title="Data Normalization", icon=":material/cleaning_services:")
+# Pendekatan Sintaksis
+sintaksis_preprocessing = st.Page("pages/data_preparation/text_processing/sintaksis_preprocessing.py", title="Sintaksis Preprocessing", icon=":material/cleaning_services:")
+semantik_preprocessing = st.Page("pages/data_preparation/text_processing/semantik_preprocessing.py", title="Semantik Preprocessing", icon=":material/cleaning_services:")
+# Feature Extraction 
+viewer_sintaksis_tfidf = st.Page("pages/data_preparation/feature_extraction/viewer_sintaksis_tfidf.py", title="Viewer TF-IDF", icon=":material/hub:")
+# Pendekatan Semantik
 tfidf_extraction = st.Page("pages/tfidf_extraction.py", title="TF-IDF Extraction", icon=":material/text_snippet:")
-# Modelling
+# Modeling
+modeling_sintaksis = st.Page("pages/modeling/modeling_sintaksis.py", title="Modeling Sintaksis", icon=":material/hub:")
+modeling_sintaksis_viewer = st.Page("pages/modeling/modeling_sintaksis_viewer.py", title="Modeling Sintaksis Viewer", icon=":material/hub:")
+modeling_sintaksis_visualisasi = st.Page("pages/modeling/modeling_sintaksis_visualisasi.py", title="Modeling Sintaksis Visualisasi", icon=":material/hub:")
+modeling_sintaksis_timeline = st.Page("pages/modeling/modeling_sintaksis_timeline.py", title="Modeling Sintaksis Timeline", icon=":material/hub:")
+modeling_evaluasi_sintaksis = st.Page("pages/modeling/modeling_evaluasi_sintaksis.py", title="Modeling Evaluasi Sintaksis", icon=":material/hub:")
+# Modeling - 1
 sintaksis_cosine = st.Page("pages/modeling_sintaksis_cosine.py", title="Sintaksis Cosine", icon=":material/hub:")
-sintaksis_clustering = st.Page("pages/modeling_sintaksis_clustering.py", title="Sintaksis Clustering", icon=":material/hub:")
+sintaksis_summary = st.Page("pages/modeling_sintaksis_summary.py", title="Sintaksis Summary", icon=":material/hub:")
+#evaluasi_sintaksis = st.Page("pages/modeling_evaluasi_sintaksis.py", title="Evaluasi Pendekatan Sintaksis", icon=":material/hub:")
+evaluasi_tsne = st.Page("pages/modeling_visualisasi_tsne.py", title="Evaluasi t-SNE", icon=":material/hub:")
 evaluasi_cosine_treshold = st.Page("pages/modeling_evaluasi_cosine_threshold.py", title="Evaluasi Cosine Threshold", icon=":material/hub:")
+modeling_evaluasi = st.Page("pages/modeling_evaluasi.py", title="Modeling Evaluasi", icon=":material/hub:")
+# Modeling Sintaksis TF-IDF Unigram
+modeling_sintaksis_tfidf_unigram = st.Page("pages/modeling_sintaksis_tfidf_unigram_viewer.py", title="Modeling Sintaksis TF-IDF Unigram", icon=":material/hub:")
 # Evaluasi
 evaluation_sintaksis = st.Page("pages/evaluation_sintaksis.py", title="Evaluation Sintaksis", icon=":material/hub:")
 # Analisis
@@ -134,8 +153,12 @@ if ss.logged_in:
             "🏠 Home": [home],
             "📂 Data Understanding": [upload_dataset, statistik_dataset, verifikasi_data],
             # "📂 Generate Data": [generate_dataset],
-            "📂 Data Processing": [load_dataset, preprocessing],
-            "📂 Modeling": [sintaksis_cosine, sintaksis_clustering, evaluasi_cosine_treshold],
+            "⚙️ Data Preparation": [load_dataset],
+            "🧹 Text Processing": [data_normalization, sintaksis_preprocessing, semantik_preprocessing],
+            "🧹 Feature Extraction": [viewer_sintaksis_tfidf],
+            "📂 Modeling": [modeling_sintaksis, modeling_sintaksis_viewer, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline, modeling_evaluasi_sintaksis],
+            "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi],
+            "📂 Modeling Sintaksis": [modeling_sintaksis_tfidf_unigram],
             "📂 Evaluation": [evaluation_sintaksis],
             "🧮 Analisis": [tfidf_extraction, analisis_sintaksis, analisis_semantik],
             "📊 Dashboard": [cluster_dashboard, exec_summary, reporting_summary],

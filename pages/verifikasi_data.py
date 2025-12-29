@@ -330,7 +330,7 @@ with tab_clean:
     min_tickets_threshold = st.number_input(
         "Ambang minimum jumlah tiket per modul (threshold kelayakan)",
         min_value=100,
-        max_value=10_000,
+        max_value=40_000,
         value=MIN_TICKETS_PER_MODUL,
         step=50,
         help="Modul dengan jumlah tiket di bawah angka ini akan dikeluarkan dari dataset kelayakan.",

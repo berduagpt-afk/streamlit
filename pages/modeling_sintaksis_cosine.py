@@ -1,26 +1,29 @@
 # pages/modeling_sintaksis_cosine.py
-# Proses Modeling – Pendekatan Sintaksis (Cosine Similarity)
+# Viewer Hasil Modeling (MODUL ONLY) — Read-only dari DB
+# Membaca: lasis_djp.modeling_runs, lasis_djp.cluster_summary, lasis_djp.cluster_members
 
-import numpy as np
+import streamlit as st
 import pandas as pd
 import altair as alt
-import streamlit as st
-from sqlalchemy import create_engine
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-import re
+from sqlalchemy import create_engine, text
 
 # ======================================================
 # 🔐 Guard login
 # ======================================================
 if not st.session_state.get("logged_in", False):
-    st.error("Silakan login terlebih dahulu untuk mengakses halaman ini.")
+    st.error("Silakan login terlebih dahulu.")
     st.stop()
 
+SCHEMA = "lasis_djp"
+T_RUNS = "modeling_runs"
+T_SUMMARY = "cluster_summary"
+T_MEMBERS = "cluster_members"
+
 # ======================================================
-# 🔌 Koneksi PostgreSQL
+# 🔌 DB Connection
 # ======================================================
-def get_connection():
+@st.cache_resource(show_spinner=False)
+def get_engine():
     cfg = st.secrets["connections"]["postgres"]
     url = (
         f"postgresql+psycopg2://{cfg['username']}:{cfg['password']}"
@@ -28,276 +31,352 @@ def get_connection():
     )
     return create_engine(url, pool_pre_ping=True)
 
+ENGINE = get_engine()
+
+# ======================================================
+# 🧠 Helpers (DB)
+# ======================================================
+@st.cache_data(show_spinner=False)
+def load_runs(limit: int = 500) -> pd.DataFrame:
+    sql = f"""
+    SELECT run_id, run_time, approach, params_json, data_range, notes
+    FROM {SCHEMA}.{T_RUNS}
+    ORDER BY run_time DESC
+    LIMIT :limit
+    """
+    return pd.read_sql(text(sql), ENGINE, params={"limit": limit})
 
 @st.cache_data(show_spinner=False)
-def load_incident_clean(schema="lasis_djp", table="incident_clean") -> pd.DataFrame:
-    eng = get_connection()
-    try:
-        df = pd.read_sql_table(table, con=eng, schema=schema)
-    finally:
-        eng.dispose()
+def load_summary(run_id: str) -> pd.DataFrame:
+    sql = f"""
+    SELECT
+        run_id, cluster_id, modul, window_start, window_end,
+        n_tickets, first_seen, last_seen,
+        representative_incident, representative_text, top_terms, metrics_json
+    FROM {SCHEMA}.{T_SUMMARY}
+    WHERE run_id = :run_id
+    ORDER BY n_tickets DESC, window_start DESC
+    """
+    df = pd.read_sql(text(sql), ENGINE, params={"run_id": run_id})
+    if not df.empty:
+        for c in ["window_start", "window_end", "first_seen", "last_seen"]:
+            df[c] = pd.to_datetime(df[c], errors="coerce")
+        df["n_tickets"] = pd.to_numeric(df["n_tickets"], errors="coerce").fillna(0).astype(int)
+        df["modul"] = df["modul"].astype(str)
+        df["cluster_id"] = df["cluster_id"].astype(str)
+        df["top_terms"] = df["top_terms"].fillna("").astype(str)
     return df
 
-
-# ======================================================
-# 🧭 Setup halaman
-# ======================================================
-st.title("🧩 Proses Modeling – Pendekatan Sintaksis (Cosine Similarity)")
-st.caption(
-    "Mengukur kemiripan antar tiket insiden berdasarkan representasi TF-IDF "
-    "dari kolom **text_sintaksis** pada `lasis_djp.incident_clean`."
-)
-
-# ======================================================
-# 📦 Load data
-# ======================================================
-with st.spinner("📦 Memuat data incident_clean..."):
-    try:
-        df = load_incident_clean()
-    except Exception as e:
-        st.error(f"Gagal memuat data dari database: {e}")
-        st.stop()
-
-if df.empty:
-    st.warning("Dataset incident_clean kosong. Jalankan dulu tahap preprocessing.")
-    st.stop()
-
-required_cols = ["incident_number", "text_sintaksis"]
-missing = [c for c in required_cols if c not in df.columns]
-if missing:
-    st.error(f"Kolom wajib tidak ditemukan: {', '.join(missing)}")
-    st.stop()
-
-# Pastikan teks string
-df["text_sintaksis"] = df["text_sintaksis"].fillna("").astype(str)
-
-# ======================================================
-# 🧹 Cleaning ringan supaya kata aneh (ðÿ, œdata, dst.) hilang
-# ======================================================
-def clean_for_tfidf(text: str) -> str:
-    text = text.lower()
-    text = re.sub(r"\s+", " ", text)
-    text = text.strip()
-    # hanya huruf/angka/spasi
-    text = re.sub(r"[^a-z0-9 ]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-df["text_sintaksis_clean"] = df["text_sintaksis"].apply(clean_for_tfidf)
-
-# Buang dokumen yang benar-benar kosong setelah cleaning
-df = df[df["text_sintaksis_clean"].str.strip() != ""].copy()
-if df.empty:
-    st.error("Semua teks menjadi kosong setelah proses cleaning. Periksa kembali preprocessing.")
-    st.stop()
-
-# ======================================================
-# 🔍 Filter modul & rentang tanggal (opsional)
-# ======================================================
-st.subheader("Filter Data Sebelum Modeling (Opsional)")
-
-with st.expander("Tampilkan filter data (modul / rentang waktu)", expanded=False):
-
-    # Filter modul (jika ada)
-    if "modul" in df.columns:
-        all_modul = (
-            df["modul"]
-            .dropna()
-            .astype(str)
-            .sort_values()
-            .unique()
-            .tolist()
-        )
-        selected_modul = st.multiselect(
-            "Pilih modul (kosongkan jika ingin semua modul)",
-            options=all_modul,
-        )
-        if selected_modul:
-            df = df[df["modul"].astype(str).isin(selected_modul)].copy()
-    else:
-        st.info("Kolom **modul** tidak ditemukan, filter modul dilewati.")
-
-    # Filter tanggal (jika ada tgl_submit)
-    if "tgl_submit" in df.columns:
+@st.cache_data(show_spinner=False)
+def load_members(run_id: str, cluster_id: str) -> pd.DataFrame:
+    sql = f"""
+    SELECT
+        run_id, cluster_id, incident_number, tgl_submit, site, assignee,
+        modul, sub_modul, detailed_decription, text_sintaksis, tgl_preprocessed
+    FROM {SCHEMA}.{T_MEMBERS}
+    WHERE run_id = :run_id
+      AND cluster_id = :cluster_id
+    ORDER BY tgl_submit ASC
+    """
+    df = pd.read_sql(text(sql), ENGINE, params={"run_id": run_id, "cluster_id": cluster_id})
+    if not df.empty:
         df["tgl_submit"] = pd.to_datetime(df["tgl_submit"], errors="coerce")
-        valid_dates = df["tgl_submit"].dropna()
-        if not valid_dates.empty:
-            min_date = valid_dates.min().date()
-            max_date = valid_dates.max().date()
-            start_date, end_date = st.date_input(
-                "Rentang tanggal berdasarkan kolom tgl_submit",
-                value=(min_date, max_date),
-            )
-            if start_date > end_date:
-                st.warning("Tanggal awal > tanggal akhir, rentang tidak diterapkan.")
-            else:
-                mask = df["tgl_submit"].dt.date.between(start_date, end_date)
-                df = df[mask].copy()
-        else:
-            st.info("Semua nilai tgl_submit tidak valid/NaT, filter tanggal dilewati.")
-    else:
-        st.info("Kolom **tgl_submit** tidak ditemukan, filter tanggal dilewati.")
+        df["tgl_preprocessed"] = pd.to_datetime(df["tgl_preprocessed"], errors="coerce", utc=True)
+    return df
 
-if df.empty:
-    st.error("Tidak ada data tersisa setelah filter. Atur ulang filter Anda.")
+@st.cache_data(show_spinner=False)
+def load_cluster_monthly_points(run_id: str, cluster_ids: list[str]) -> pd.DataFrame:
+    """
+    Menghasilkan titik timeline per bulan untuk cluster terpilih:
+    (cluster_id, month, n_incidents)
+    """
+    if not cluster_ids:
+        return pd.DataFrame(columns=["cluster_id", "month", "n_incidents"])
+
+    # Pakai ANY(:cluster_ids) agar efisien
+    sql = f"""
+    SELECT
+      cluster_id,
+      date_trunc('month', tgl_submit)::date AS month,
+      COUNT(*)::int AS n_incidents
+    FROM {SCHEMA}.{T_MEMBERS}
+    WHERE run_id = :run_id
+      AND cluster_id = ANY(:cluster_ids)
+    GROUP BY cluster_id, date_trunc('month', tgl_submit)::date
+    ORDER BY month ASC;
+    """
+    df = pd.read_sql(
+        text(sql),
+        ENGINE,
+        params={"run_id": run_id, "cluster_ids": cluster_ids},
+    )
+    if not df.empty:
+        df["month"] = pd.to_datetime(df["month"], errors="coerce")
+        df["cluster_id"] = df["cluster_id"].astype(str)
+        df["n_incidents"] = pd.to_numeric(df["n_incidents"], errors="coerce").fillna(0).astype(int)
+    return df
+
+def df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8-sig")
+
+def short_topic(top_terms: str, max_len: int = 42) -> str:
+    s = (top_terms or "").strip()
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 3].rstrip() + "..."
+
+# ======================================================
+# 🎛️ Sidebar
+# ======================================================
+st.sidebar.header("⚙️ Viewer Hasil Modeling")
+
+runs = load_runs()
+if runs.empty:
+    st.warning(f"Tabel {SCHEMA}.{T_RUNS} kosong. Jalankan run_modeling.py terlebih dahulu.")
     st.stop()
 
-st.write(f"Jumlah tiket setelah filter: **{len(df):,}**")
+run_label = runs.apply(lambda r: f"{r['run_time']} | {r['approach']} | {r['run_id']}", axis=1)
+run_map = dict(zip(run_label, runs["run_id"]))
+selected_run_label = st.sidebar.selectbox("Pilih run_id", run_label.tolist(), index=0)
+run_id = run_map[selected_run_label]
+
+with st.sidebar.expander("📌 Info Run", expanded=False):
+    r = runs[runs["run_id"] == run_id].iloc[0].to_dict()
+    st.write("**run_id:**", r.get("run_id"))
+    st.write("**run_time:**", r.get("run_time"))
+    st.write("**approach:**", r.get("approach"))
+
+summary = load_summary(run_id)
+if summary.empty:
+    st.warning(f"Tidak ada cluster_summary untuk run_id={run_id}.")
+    st.stop()
 
 # ======================================================
-# ⚙️ Parameter TF-IDF & Cosine Similarity (Sidebar)
+# ✅ FUNGSI-STYLE VIEW (seperti contoh gambar)
 # ======================================================
-with st.sidebar:
-    st.header("⚙️ Parameter Modeling Sintaksis")
+st.markdown("## 📌 Cluster Overview (Functional View)")
 
-    max_features = st.number_input(
-        "Maksimal jumlah fitur TF-IDF",
-        min_value=1000,
-        max_value=50_000,
-        value=5_000,
-        step=1000,
-    )
+# Application Name = modul
+modul_opts = sorted([m for m in summary["modul"].dropna().unique().tolist() if m and m != "nan"])
+if not modul_opts:
+    st.warning("Kolom modul kosong pada summary.")
+    st.stop()
 
-    ngram_max = st.selectbox(
-        "N-gram maksimum",
-        options=[1, 2],
-        index=0,
-        format_func=lambda x: "Unigram" if x == 1 else "Unigram + Bigram",
-    )
+colA, colB = st.columns([1, 2])
+with colA:
+    app_name = st.selectbox("Application Name", modul_opts, index=0)
+with colB:
+    st.caption("Tampilan ini merangkum cluster (label/size/topic) dan kemunculannya dari waktu ke waktu (per bulan).")
 
-    min_df = st.number_input(
-        "min_df (dokumen minimal suatu term muncul)",
-        min_value=1,
-        max_value=100,
-        value=3,
-        step=1,
-    )
+# Filter khusus view ini
+f_app = summary[summary["modul"] == app_name].copy()
 
-    max_df_ratio = st.slider(
-        "max_df (proporsi dokumen maksimal term muncul)",
-        min_value=0.1,
-        max_value=1.0,
-        value=0.9,
-        step=0.05,
-    )
+max_n = int(max(2, f_app["n_tickets"].max()))
+c1, c2, c3 = st.columns(3)
+with c1:
+    min_cluster = st.number_input("Min Cluster Size", min_value=2, value=2, step=1)
+with c2:
+    top_k = st.number_input("Top K Clusters", min_value=5, max_value=200, value=30, step=5)
+with c3:
+    st.metric("Clusters (modul)", f"{len(f_app):,}")
 
-    top_k = st.slider(
-        "Jumlah tiket paling mirip yang ditampilkan",
-        min_value=5,
-        max_value=100,
-        value=20,
-        step=5,
-    )
+f_app = f_app[f_app["n_tickets"] >= int(min_cluster)].copy()
+f_app = f_app.sort_values(["n_tickets", "window_start"], ascending=[False, False]).head(int(top_k))
 
-    threshold = st.slider(
-        "Threshold Cosine Similarity (untuk penyaringan)",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.5,
-        step=0.05,
-    )
+if f_app.empty:
+    st.info("Tidak ada cluster yang memenuhi filter pada modul ini.")
+    st.stop()
+
+# Buat label numerik seperti contoh (0..K-1)
+f_app = f_app.reset_index(drop=True)
+f_app["cluster_label"] = f_app.index.astype(int)
+
+# Table kiri: Cluster Label | Cluster Size | Cluster Topic
+left, right = st.columns([1.05, 1.5])
+
+with left:
+    table_like = f_app[["cluster_label", "n_tickets", "top_terms"]].copy()
+    table_like.columns = ["Cluster Label", "Cluster Size", "Cluster Topic"]
+    table_like["Cluster Topic"] = table_like["Cluster Topic"].apply(lambda x: short_topic(x, 52))
+    st.dataframe(table_like, use_container_width=True, height=360)
+
+# Timeline kanan: titik kemunculan cluster per bulan
+with right:
+    # ambil point timeline dari cluster_members untuk cluster_id terpilih (Top K)
+    cluster_ids = f_app["cluster_id"].tolist()
+    points = load_cluster_monthly_points(run_id, cluster_ids)
+
+    if points.empty:
+        st.info("Tidak ada data timeline pada cluster_members (cek tgl_submit atau isi tabel).")
+    else:
+        # map cluster_id -> cluster_label supaya y-axis rapi
+        mapper = f_app.set_index("cluster_id")["cluster_label"].to_dict()
+        points["cluster_label"] = points["cluster_id"].map(mapper)
+
+        # chart: x=month, y=cluster_label, size=n_incidents
+        chart = (
+            alt.Chart(points)
+            .mark_circle()
+            .encode(
+                x=alt.X("month:T", title="Month"),
+                y=alt.Y("cluster_label:O", title="Clusters", sort="ascending"),
+                size=alt.Size("n_incidents:Q", title="Count"),
+                tooltip=[
+                    alt.Tooltip("cluster_label:O", title="Cluster Label"),
+                    alt.Tooltip("month:T", title="Month"),
+                    alt.Tooltip("n_incidents:Q", title="Count"),
+                ],
+            )
+            .properties(height=360)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+st.divider()
 
 # ======================================================
-# 🔢 Hitung TF-IDF (sekali untuk seluruh data terfilter)
+# Viewer lengkap (seperti sebelumnya) — untuk drill-down detail
 # ======================================================
-with st.spinner("🔢 Menghitung TF-IDF untuk pendekatan sintaksis..."):
-    vectorizer = TfidfVectorizer(
-        max_features=max_features,
-        ngram_range=(1, ngram_max),
-        min_df=min_df,
-        max_df=max_df_ratio,
-        use_idf=True,
-        norm="l2",
-        lowercase=False,  # sudah dilowercase di cleaning
-        token_pattern=r"(?u)\b[a-z0-9]{2,}\b",  # hanya token >=2
+st.markdown("## 📊 Viewer Hasil Modeling (Detail View)")
+
+# Filter detail view (opsional: gunakan app_name sebagai default)
+st.sidebar.divider()
+st.sidebar.subheader("Filter Detail View")
+
+detail_modul_opts = ["(Semua)"] + modul_opts
+f_modul = st.sidebar.selectbox("Filter modul (detail)", detail_modul_opts, index=detail_modul_opts.index(app_name) if app_name in detail_modul_opts else 0)
+
+max_n_all = int(max(2, summary["n_tickets"].max()))
+min_cluster_detail = st.sidebar.slider("Minimal ukuran cluster (detail)", 2, max_n_all, int(min_cluster))
+
+min_w = summary["window_start"].min()
+max_w = summary["window_start"].max()
+if pd.notna(min_w) and pd.notna(max_w):
+    w_start, w_end = st.sidebar.date_input(
+        "Rentang window_start (detail)",
+        value=(min_w.date(), max_w.date()),
+        min_value=min_w.date(),
+        max_value=max_w.date(),
     )
+else:
+    w_start, w_end = None, None
 
-    X = vectorizer.fit_transform(df["text_sintaksis_clean"].tolist())
-    n_docs, n_terms = X.shape
+# Apply detail filters
+f = summary.copy()
+if f_modul != "(Semua)":
+    f = f[f["modul"] == f_modul]
+f = f[f["n_tickets"] >= int(min_cluster_detail)]
+if w_start and w_end:
+    f = f[(f["window_start"].dt.date >= w_start) & (f["window_start"].dt.date <= w_end)]
 
-st.success(f"TF-IDF berhasil dihitung: {n_docs} dokumen × {n_terms} fitur aktif.")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Run ID", run_id)
+k2.metric("Jumlah Cluster (filtered)", f"{len(f):,}")
+k3.metric("Total Tiket (filtered)", f"{int(f['n_tickets'].sum()):,}")
+k4.metric("Rata-rata ukuran cluster", f"{(f['n_tickets'].mean() if len(f) else 0):.2f}")
 
-# ======================================================
-# 🎯 Pilih tiket anchor
-# ======================================================
-st.subheader("Pilih Tiket Anchor untuk Mengukur Kemiripan")
-
-# Dropdown berdasarkan incident_number + (optional) judul/teks pendek
-df["display_label"] = df["incident_number"].astype(str)
-if "judul_masalah" in df.columns:
-    df["display_label"] = df["display_label"] + " – " + df["judul_masalah"].fillna("").str.slice(0, 60)
-
-anchor_label = st.selectbox(
-    "Pilih tiket anchor",
-    options=df["display_label"].tolist(),
+st.download_button(
+    "⬇️ Download Cluster Summary (Filtered) CSV",
+    data=df_to_csv_bytes(f),
+    file_name=f"cluster_summary_filtered_{run_id}.csv",
+    mime="text/csv",
+    use_container_width=True,
 )
 
-anchor_idx = df.index[df["display_label"] == anchor_label][0]
+st.markdown("### 📈 Distribusi")
+c1, c2 = st.columns(2)
 
-st.markdown("**Teks anchor (text_sintaksis):**")
-st.write(df.loc[anchor_idx, "text_sintaksis"])
-
-# ======================================================
-# 🧮 Hitung Cosine Similarity anchor vs lainnya
-# ======================================================
-if st.button("🚀 Hitung Kemiripan dengan Cosine Similarity", use_container_width=True):
-    with st.spinner("Menghitung kemiripan anchor dengan seluruh tiket..."):
-        # cosine_similarity antara 1 dokumen vs seluruh dokumen
-        anchor_vec = X[ df.index.get_loc(anchor_idx) ]  # posisi baris di X
-        sims = cosine_similarity(anchor_vec, X).ravel()
-
-        # susun DataFrame hasil
-        result_df = df.copy()
-        result_df["cosine_similarity"] = sims
-
-        # urutkan dari yang paling mirip
-        result_df = result_df.sort_values("cosine_similarity", ascending=False)
-
-        # buang dirinya sendiri (cosine = 1)
-        result_df = result_df[result_df["incident_number"] != df.loc[anchor_idx, "incident_number"]]
-
-        # ambil top_k
-        top_df = result_df.head(top_k).copy()
-
-        # terapkan threshold untuk display
-        above_th = top_df[top_df["cosine_similarity"] >= threshold].copy()
-
-        st.subheader("Distribusi Cosine Similarity (Anchor vs Semua Dokumen)")
-        hist_chart = alt.Chart(result_df).mark_bar().encode(
-            x=alt.X("cosine_similarity:Q", bin=alt.Bin(maxbins=30), title="Cosine Similarity"),
-            y=alt.Y("count():Q", title="Jumlah Dokumen"),
-            tooltip=["count()"]
-        ).properties(height=300)
-        st.altair_chart(hist_chart, use_container_width=True)
-
-        st.markdown(
-            f"**Top {top_k} tiket paling mirip** (tanpa filter threshold). "
-            f"Baris dengan Cosine ≥ {threshold:.2f} dianggap *cukup mirip* menurut parameter saat ini."
+with c1:
+    by_modul = (
+        f.groupby("modul", dropna=False)
+        .agg(n_cluster=("cluster_id", "count"), n_tickets=("n_tickets", "sum"))
+        .reset_index()
+        .sort_values("n_cluster", ascending=False)
+        .head(30)
+    )
+    chart_modul = (
+        alt.Chart(by_modul)
+        .mark_bar()
+        .encode(
+            x=alt.X("n_cluster:Q", title="Jumlah Cluster"),
+            y=alt.Y("modul:N", sort="-x", title="Modul"),
+            tooltip=["modul", "n_cluster", "n_tickets"],
         )
+        .properties(height=380)
+    )
+    st.altair_chart(chart_modul, use_container_width=True)
 
-        show_cols = ["incident_number", "cosine_similarity"]
-        for c in ["modul", "site", "judul_masalah", "text_sintaksis"]:
-            if c in top_df.columns:
-                show_cols.append(c)
-
-        st.dataframe(
-            top_df[show_cols],
-            use_container_width=True,
+with c2:
+    hist = (
+        alt.Chart(f)
+        .mark_bar()
+        .encode(
+            x=alt.X("n_tickets:Q", bin=alt.Bin(maxbins=30), title="Ukuran Cluster (n_tickets)"),
+            y=alt.Y("count():Q", title="Jumlah Cluster"),
+            tooltip=[alt.Tooltip("count():Q", title="Jumlah Cluster")],
         )
+        .properties(height=380)
+    )
+    st.altair_chart(hist, use_container_width=True)
 
-        st.subheader(f"Tiket Paling Mirip dengan Cosine ≥ {threshold:.2f}")
-        if above_th.empty:
-            st.info("Tidak ada tiket dalam Top-N yang melampaui threshold saat ini. Coba turunkan threshold.")
-        else:
-            st.dataframe(
-                above_th[show_cols],
-                use_container_width=True,
-            )
+st.markdown("### 📋 Daftar Cluster (Filtered)")
+view_cols = [
+    "cluster_id", "modul", "window_start", "window_end",
+    "n_tickets", "first_seen", "last_seen", "top_terms"
+]
+table_df = f[view_cols].copy()
+st.dataframe(table_df, use_container_width=True, height=360)
 
-        st.markdown(
-            "Catatan: Threshold Cosine Similarity inilah yang nanti bisa kamu bahas sebagai "
-            "**parameter evaluasi** pada pendekatan sintaksis, misalnya apakah 0,6 atau 0,7 "
-            "memberikan pasangan tiket yang secara substantif benar-benar mirip menurut pakar DJP."
-        )
-else:
-    st.info("Pilih tiket anchor lalu klik **Hitung Kemiripan dengan Cosine Similarity**.")
+cluster_ids = f["cluster_id"].tolist()
+if not cluster_ids:
+    st.info("Tidak ada cluster yang memenuhi filter.")
+    st.stop()
+
+st.markdown("### 🔎 Detail Cluster (Drill-down)")
+selected_cluster = st.selectbox("Pilih cluster_id", cluster_ids)
+
+members = load_members(run_id, selected_cluster)
+if members.empty:
+    st.warning("Tidak ada anggota cluster untuk cluster_id ini.")
+    st.stop()
+
+m1, m2, m3, m4 = st.columns(4)
+m1.metric("Cluster ID", selected_cluster)
+m2.metric("Jumlah Tiket", f"{len(members):,}")
+m3.metric("Tanggal pertama", str(members["tgl_submit"].min()))
+m4.metric("Tanggal terakhir", str(members["tgl_submit"].max()))
+
+rep = summary[summary["cluster_id"] == selected_cluster]
+if not rep.empty:
+    rep_row = rep.iloc[0]
+    with st.expander("🧷 Representative Text & Top Terms", expanded=True):
+        st.write("**Representative Incident:**", rep_row.get("representative_incident"))
+        st.write("**Top Terms:**", rep_row.get("top_terms"))
+        st.text_area("Representative Text (text_sintaksis)", rep_row.get("representative_text") or "", height=160)
+
+st.dataframe(
+    members[[
+        "tgl_submit", "incident_number", "site", "assignee",
+        "modul", "sub_modul", "text_sintaksis"
+    ]],
+    use_container_width=True,
+    height=420,
+)
+
+d1, d2 = st.columns(2)
+with d1:
+    st.download_button(
+        "⬇️ Download Anggota Cluster (CSV)",
+        data=df_to_csv_bytes(members),
+        file_name=f"cluster_members_{run_id}_{selected_cluster}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
+with d2:
+    inc_only = members[["incident_number", "tgl_submit", "modul", "sub_modul"]].copy()
+    st.download_button(
+        "⬇️ Download Incident List (CSV)",
+        data=df_to_csv_bytes(inc_only),
+        file_name=f"incident_list_{run_id}_{selected_cluster}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
