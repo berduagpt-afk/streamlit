@@ -137,7 +137,7 @@ def get_engine(db_url: Optional[str]) -> Engine:
     port = os.getenv("PGPORT", "5432")
     db = os.getenv("PGDATABASE", "incident_djp")
     user = os.getenv("PGUSER", "postgres")
-    pw = os.getenv("PGPASSWORD", "")
+    pw = os.getenv("PGPASSWORD", "admin*123")
 
     if not pw:
         raise RuntimeError("PGPASSWORD tidak ditemukan. Set env PGPASSWORD atau gunakan --db-url.")
