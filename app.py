@@ -121,9 +121,16 @@ viewer_sintaksis_tfidf = st.Page("pages/data_preparation/feature_extraction/view
 # Pendekatan Semantik
 tfidf_extraction = st.Page("pages/tfidf_extraction.py", title="TF-IDF Extraction", icon=":material/text_snippet:")
 # Modeling
+# Sintaksis
+modeling_sintaksis_pra_threshold = st.Page("pages/modeling/modeling_sintaksis_pra_threshold.py", title="Modeling Sintaksis Pra Threshold", icon=":material/hub:")
 modeling_sintaksis_viewer = st.Page("pages/modeling/modeling_sintaksis_viewer.py", title="Modeling Sintaksis Viewer", icon=":material/hub:")
 modeling_evaluasi_sintaksis = st.Page("pages/modeling/modeling_evaluasi_sintaksis.py", title="Modeling Evaluasi Sintaksis", icon=":material/hub:")
 modeling_sintaksis_temporal = st.Page("pages/modeling/modeling_sintaksis_temporal.py", title="Modeling Sintaksis Temporal", icon=":material/hub:")
+# Semantik
+modeling_semantik_embedding = st.Page("pages/modeling/modeling_semantik_embedding.py", title="Modeling Semantik Embedding", icon=":material/hub:")
+modeling_semantik_hdbscan = st.Page("pages/modeling/modeling_semantik_hdbscan.py", title="Modeling Semantik HDBSCAN", icon=":material/hub:")
+modeling_semantik_viewer = st.Page("pages/modeling/modeling_semantik_viewer.py", title="Modeling Semantik Viewer", icon=":material/hub:")
+modeling_semantik_temporal = st.Page("pages/modeling/modeling_semantik_temporal.py", title="Modeling Semantik Temporal", icon=":material/hub:")
 # Modeling - 1
 modeling_sintaksis = st.Page("pages/modeling/modeling_sintaksis.py", title="Modeling Sintaksis", icon=":material/hub:")
 modeling_sintaksis_visualisasi = st.Page("pages/modeling/modeling_sintaksis_visualisasi.py", title="Modeling Sintaksis Visualisasi", icon=":material/hub:")
@@ -157,9 +164,10 @@ if ss.logged_in:
             "⚙️ Data Preparation": [load_dataset],
             "🧹 Text Processing": [data_normalization, sintaksis_preprocessing, semantik_preprocessing],
             "🧹 Feature Extraction": [viewer_sintaksis_tfidf],
-            "📂 Modeling": [modeling_sintaksis_viewer, modeling_evaluasi_sintaksis, modeling_sintaksis_temporal],
+            "📂 Modeling Sintaksis": [modeling_sintaksis_pra_threshold, modeling_sintaksis_viewer, modeling_evaluasi_sintaksis, modeling_sintaksis_temporal],
+            "📂 Modeling Semantik": [modeling_semantik_embedding, modeling_semantik_hdbscan, modeling_semantik_viewer, modeling_semantik_temporal],
             "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
-            "📂 Modeling Sintaksis": [modeling_sintaksis_tfidf_unigram],
+            "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram],
             "📂 Evaluation": [evaluation_sintaksis],
             "🧮 Analisis": [tfidf_extraction, analisis_sintaksis, analisis_semantik],
             "📊 Dashboard": [cluster_dashboard, exec_summary, reporting_summary],
