@@ -118,6 +118,7 @@ sintaksis_preprocessing = st.Page("pages/data_preparation/text_processing/sintak
 semantik_preprocessing = st.Page("pages/data_preparation/text_processing/semantik_preprocessing.py", title="Semantik Preprocessing", icon=":material/cleaning_services:")
 # Feature Extraction 
 viewer_sintaksis_tfidf = st.Page("pages/data_preparation/feature_extraction/viewer_sintaksis_tfidf.py", title="Viewer TF-IDF", icon=":material/hub:")
+viewer_semantik_bert = st.Page("pages/data_preparation/feature_extraction/viewer_semantik_bert.py", title="Viewer BERT", icon=":material/hub:")
 # Pendekatan Semantik
 tfidf_extraction = st.Page("pages/tfidf_extraction.py", title="TF-IDF Extraction", icon=":material/text_snippet:")
 # Modeling
@@ -127,10 +128,11 @@ modeling_sintaksis_viewer = st.Page("pages/modeling/modeling_sintaksis_viewer.py
 modeling_evaluasi_sintaksis = st.Page("pages/modeling/modeling_evaluasi_sintaksis.py", title="Modeling Evaluasi Sintaksis", icon=":material/hub:")
 modeling_sintaksis_temporal = st.Page("pages/modeling/modeling_sintaksis_temporal.py", title="Modeling Sintaksis Temporal", icon=":material/hub:")
 # Semantik
-modeling_semantik_embedding = st.Page("pages/modeling/modeling_semantik_embedding.py", title="Modeling Semantik Embedding", icon=":material/hub:")
-modeling_semantik_hdbscan = st.Page("pages/modeling/modeling_semantik_hdbscan.py", title="Modeling Semantik HDBSCAN", icon=":material/hub:")
-modeling_semantik_viewer = st.Page("pages/modeling/modeling_semantik_viewer.py", title="Modeling Semantik Viewer", icon=":material/hub:")
+# modeling_semantik_embedding = st.Page("pages/modeling/modeling_semantik_embedding.py", title="Modeling Semantik Embedding", icon=":material/hub:")
+# modeling_semantik_hdbscan = st.Page("pages/modeling/modeling_semantik_hdbscan.py", title="Modeling Semantik HDBSCAN", icon=":material/hub:")
+modeling_semantik_hdbscan_viewer = st.Page("pages/modeling/modeling_semantik_hdbscan_viewer.py", title="Modeling Semantik HBSCAN Viewer", icon=":material/hub:")
 modeling_semantik_temporal = st.Page("pages/modeling/modeling_semantik_temporal.py", title="Modeling Semantik Temporal", icon=":material/hub:")
+modeling_evaluasi_dbcv = st.Page("pages/modeling/modeling_evaluasi_dbcv.py", title="Modeling Semantik Evaluasi DBCV", icon=":material/hub:")
 # Modeling - 1
 modeling_sintaksis = st.Page("pages/modeling/modeling_sintaksis.py", title="Modeling Sintaksis", icon=":material/hub:")
 modeling_sintaksis_visualisasi = st.Page("pages/modeling/modeling_sintaksis_visualisasi.py", title="Modeling Sintaksis Visualisasi", icon=":material/hub:")
@@ -151,6 +153,9 @@ analisis_semantik = st.Page("pages/analisis_semantik.py", title="Analisis Semant
 cluster_dashboard = st.Page("pages/cluster_dashboard.py", title="Cluster Dashboard", icon=":material/bubble_chart:")
 exec_summary = st.Page("pages/exec_summary.py", title="Executive Summary", icon=":material/insights:")
 reporting_summary = st.Page("pages/reporting_summary.py", title="Reporting Summary", icon=":material/stacked_line_chart:")
+# Eksperimental
+venn_diagram = st.Page("pages/eksperimental/venn_sintaksis_vs_semantik.py", title="Venn Diagram", icon=":material/thumb_up:")
+semantik_chart = st.Page("pages/eksperimental/modeling_semantic_hdbscan_charts.py", title="Semantik Chart", icon=":material/thumb_up:")
 
 # ======================================================
 # 🧭 NAVIGASI BERDASARKAN STATUS LOGIN
@@ -163,13 +168,14 @@ if ss.logged_in:
             # "📂 Generate Data": [generate_dataset],
             "⚙️ Data Preparation": [load_dataset],
             "🧹 Text Processing": [data_normalization, sintaksis_preprocessing, semantik_preprocessing],
-            "🧹 Feature Extraction": [viewer_sintaksis_tfidf],
+            "🧹 Feature Extraction": [viewer_sintaksis_tfidf, viewer_semantik_bert],
             "📂 Modeling Sintaksis": [modeling_sintaksis_pra_threshold, modeling_sintaksis_viewer, modeling_evaluasi_sintaksis, modeling_sintaksis_temporal],
-            "📂 Modeling Semantik": [modeling_semantik_embedding, modeling_semantik_hdbscan, modeling_semantik_viewer, modeling_semantik_temporal],
+            "📂 Modeling Semantik": [modeling_semantik_hdbscan_viewer, modeling_semantik_temporal, modeling_evaluasi_dbcv],
             "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
             "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram],
             "📂 Evaluation": [evaluation_sintaksis],
             "🧮 Analisis": [tfidf_extraction, analisis_sintaksis, analisis_semantik],
+            "🧮 Eksperimental": [venn_diagram, semantik_chart],
             "📊 Dashboard": [cluster_dashboard, exec_summary, reporting_summary],
             "👤 Account": [logout_page],
         }
