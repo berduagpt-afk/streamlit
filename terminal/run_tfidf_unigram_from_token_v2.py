@@ -1,28 +1,21 @@
-# run_tfidf_unigram_tokens_sintaksis.py (FINAL - FULL, PATCH: IDF ONLY IN RUNS)
-# ============================================================
-# Offline TF-IDF Unigram dari tokens_sintaksis_json -> simpan ke:
-#   - lasis_djp.incident_tfidf_runs        (IDF disimpan sekali per run)
-#   - lasis_djp.incident_tfidf_vectors     (tanpa IDF)
+# run_tfidf_unigram_tokens_sintaksis.py (PATCHED)
+# Offline TF-IDF Unigram dari tokens_sintaksis_json -> simpan ke tabel baru
 #
 # Input : lasis_djp.incident_sintaksis
 #   (tgl_submit, incident_number, site, assignee, modul, sub_modul, tokens_sintaksis_json)
+# Contoh tokens_sintaksis_json:
+#   ["permohonan","pemutakhiran","data","_ph_longnum_","afiyatus","adah","pada","menu",
+#    "tindak","lanjut","pemutakhiran","data","tidak","dapat","tindak","lanjut","error"]
 #
 # Output:
-#   RUNS (incident_tfidf_runs):
-#     - run_id, run_time, approach, params_json, data_range, notes
-#     - idf_json             : JSONB {term: idf} (global)
-#     - feature_names_json   : JSONB [term1, term2, ...] urutan fitur untuk rekonstruksi vector
-#
-#   VECTORS (incident_tfidf_vectors):
-#     - subject_tokens_json : JSONB list token
-#     - tf_json            : JSONB {term: tf}     (TF normalized: count/len(tokens))
-#     - tfidf_json         : JSONB {term: tfidf}  (tf * idf)
-#     - tfidf_vec_json     : JSONB list dense vector sesuai urutan feature_names_json (optional)
+#   - lasis_djp.incident_modeling_tfidf_runs
+#   - lasis_djp.incident_modeling_tfidf_vectors
 #
 # Catatan:
-# - IDF tidak di-duplicate per dokumen untuk hemat storage.
-# - Dense vector bisa besar. Matikan dengan --no-dense-vec bila perlu.
-# ============================================================
+# - TF-IDF disimpan numerik dalam JSONB {feature: weight} (sparse non-zero).
+# - UNIGRAM ngram_range=(1,1)
+# - tokens_sintaksis_json juga disimpan ke tabel vectors (untuk audit/traceability)
+# - Penyimpanan dict/list ke JSONB via psycopg2.extras.Json
 
 from __future__ import annotations
 
@@ -30,12 +23,10 @@ import os
 import sys
 import time
 import uuid
-import json
 import argparse
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
-from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -62,7 +53,7 @@ class TfidfConfig:
     col_assignee: str = "assignee"
     col_modul: str = "modul"
     col_sub_modul: str = "sub_modul"
-    col_tokens_json: str = "tokens_sintaksis_json"
+    col_tokens_json: str = "tokens_sintaksis_json"  # ✅ sumber token JSON array
 
     # filters (opsional)
     start_date: Optional[str] = None
@@ -76,23 +67,21 @@ class TfidfConfig:
     max_features: Optional[int] = None
     lowercase: bool = True
     ngram_min: int = 1
-    ngram_max: int = 1
+    ngram_max: int = 1  # ✅ UNIGRAM
 
     # store controls
-    store_topn: Optional[int] = None   # top-n untuk tf/tfidf dict (opsional)
-    store_vec_dense: bool = True       # simpan tfidf_vec_json dense
+    store_topn: Optional[int] = None
     insert_chunksize: int = 2000
     insert_method: str = "multi"
 
     # output
     output_schema: str = "lasis_djp"
-    runs_table: str = "incident_tfidf_runs"
-    vectors_table: str = "incident_tfidf_vectors"
+    runs_table: str = "incident_modeling_tfidf_runs"
+    vectors_table: str = "incident_modeling_tfidf_vectors"
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-
     p.add_argument("--db-url", default=None)
 
     p.add_argument("--schema", default="lasis_djp")
@@ -110,12 +99,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-lowercase", dest="lowercase", action="store_false")
 
     p.add_argument("--store-topn", type=int, default=None)
-    p.add_argument("--no-dense-vec", dest="store_vec_dense", action="store_false")
-
     p.add_argument("--insert-chunksize", type=int, default=2000)
     p.add_argument("--insert-method", default="multi")
     p.add_argument("--output-schema", default="lasis_djp")
-
     p.add_argument("--dry-run", action="store_true")
     return p.parse_args()
 
@@ -133,7 +119,6 @@ def build_config(ns: argparse.Namespace) -> TfidfConfig:
         max_features=ns.max_features,
         lowercase=ns.lowercase,
         store_topn=ns.store_topn,
-        store_vec_dense=bool(getattr(ns, "store_vec_dense", True)),
         insert_chunksize=ns.insert_chunksize,
         insert_method=ns.insert_method,
         output_schema=ns.output_schema,
@@ -152,15 +137,12 @@ def get_engine(db_url: Optional[str]) -> Engine:
     port = os.getenv("PGPORT", "5432")
     db = os.getenv("PGDATABASE", "incident_djp")
     user = os.getenv("PGUSER", "postgres")
-    pw = os.getenv("PGPASSWORD", "")
+    pw = os.getenv("PGPASSWORD", "admin*123")
 
     if not pw:
         raise RuntimeError("PGPASSWORD tidak ditemukan. Set env PGPASSWORD atau gunakan --db-url.")
 
-    return create_engine(
-        f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}",
-        pool_pre_ping=True
-    )
+    return create_engine(f"postgresql+psycopg2://{user}:{pw}@{host}:{port}/{db}", pool_pre_ping=True)
 
 
 def _exec_ddl(conn, ddl: str) -> None:
@@ -171,51 +153,40 @@ def _exec_ddl(conn, ddl: str) -> None:
 
 def ensure_output_tables(engine: Engine, cfg: TfidfConfig) -> None:
     """
-    Patch DDL:
-    - RUNS: tambah idf_json + feature_names_json (sekali per run)
-    - VECTORS: TANPA idf_json
+    IMPORTANT:
+    - CREATE TABLE IF NOT EXISTS tidak menambah kolom pada tabel yang sudah ada.
+    - Jadi kita tambahkan ALTER TABLE ADD COLUMN IF NOT EXISTS untuk kolom baru.
     """
     ddl = f"""
-    CREATE TABLE IF NOT EXISTS {cfg.output_schema}.{cfg.runs_table}
-    (
-        run_id TEXT PRIMARY KEY,
-        run_time TIMESTAMP NOT NULL,
-        approach TEXT NOT NULL,
-        params_json JSONB NOT NULL,
-        data_range JSONB,
-        notes TEXT,
-
-        -- ✅ global per run
-        idf_json JSONB,
-        feature_names_json JSONB
+    CREATE TABLE IF NOT EXISTS {cfg.output_schema}.{cfg.runs_table} (
+        run_id       TEXT PRIMARY KEY,
+        run_time     TIMESTAMP NOT NULL,
+        approach     TEXT NOT NULL,
+        params_json  JSONB NOT NULL,
+        data_range   JSONB,
+        notes        TEXT
     );
 
-    -- jika tabel runs sudah ada, tambahkan kolom jika belum ada
-    ALTER TABLE {cfg.output_schema}.{cfg.runs_table}
-        ADD COLUMN IF NOT EXISTS idf_json JSONB;
-    ALTER TABLE {cfg.output_schema}.{cfg.runs_table}
-        ADD COLUMN IF NOT EXISTS feature_names_json JSONB;
-
-    CREATE TABLE IF NOT EXISTS {cfg.output_schema}.{cfg.vectors_table}
-    (
-        run_id TEXT NOT NULL,
-        incident_number TEXT NOT NULL,
-        tgl_submit TIMESTAMP,
-        site TEXT,
-        assignee TEXT,
-        modul TEXT,
-        sub_modul TEXT,
-
-        subject_tokens_json JSONB,
-        tf_json JSONB,
-        tfidf_json JSONB NOT NULL,
-        tfidf_vec_json JSONB,
-
-        tokens_sintaksis_json JSONB,
-        text_sintaksis TEXT,
-
+    CREATE TABLE IF NOT EXISTS {cfg.output_schema}.{cfg.vectors_table} (
+        run_id                  TEXT NOT NULL,
+        incident_number         TEXT NOT NULL,
+        tgl_submit              TIMESTAMP,
+        site                    TEXT,
+        assignee                TEXT,
+        modul                   TEXT,
+        sub_modul               TEXT,
+        tokens_sintaksis_json   JSONB,          -- ✅ simpan token untuk audit
+        text_sintaksis          TEXT,           -- ✅ hasil join token (dokumen TF-IDF)
+        tfidf_json              JSONB NOT NULL,
         PRIMARY KEY (run_id, incident_number)
     );
+
+    -- Patch kolom jika tabel sudah ada sebelumnya tapi belum punya kolom-kolom di atas
+    ALTER TABLE {cfg.output_schema}.{cfg.vectors_table}
+        ADD COLUMN IF NOT EXISTS tokens_sintaksis_json JSONB;
+
+    ALTER TABLE {cfg.output_schema}.{cfg.vectors_table}
+        ADD COLUMN IF NOT EXISTS text_sintaksis TEXT;
 
     CREATE INDEX IF NOT EXISTS idx_{cfg.vectors_table}_run_modul
         ON {cfg.output_schema}.{cfg.vectors_table} (run_id, modul, tgl_submit);
@@ -224,15 +195,23 @@ def ensure_output_tables(engine: Engine, cfg: TfidfConfig) -> None:
         _exec_ddl(conn, ddl)
 
 
-def _tokens_to_list(val: Union[str, list, None]) -> List[str]:
+def _tokens_to_text(val: Union[str, list, None]) -> List[str]:
+    """
+    Normalize tokens_sintaksis_json menjadi list[str].
+    - Jika sudah list -> pastikan elemen string
+    - Jika string JSON-like -> coba parse (opsional), tapi kita minim asumsi:
+      kalau string biasa, anggap 1 token.
+    """
     if val is None:
         return []
     if isinstance(val, list):
         return [str(x) for x in val if str(x).strip()]
     if isinstance(val, str):
         s = val.strip()
+        # jika DB mengembalikan JSON sebagai string, coba parse cepat
         if s.startswith("[") and s.endswith("]"):
             try:
+                import json
                 parsed = json.loads(s)
                 if isinstance(parsed, list):
                     return [str(x) for x in parsed if str(x).strip()]
@@ -277,17 +256,17 @@ def fetch_source(engine: Engine, cfg: TfidfConfig) -> pd.DataFrame:
     {where_sql}
     ORDER BY {cfg.col_date} ASC
     """
-    df = pd.read_sql(text(sql), engine, params=params)
 
+    df = pd.read_sql(text(sql), engine, params=params)
     df["tgl_submit"] = pd.to_datetime(df["tgl_submit"], errors="coerce")
+
     for c in ["incident_number", "site", "assignee", "modul", "sub_modul"]:
         df[c] = df.get(c, "").fillna("").astype(str)
 
-    df["tokens_sintaksis_json"] = df.get("tokens_sintaksis_json", None).apply(_tokens_to_list)
+    # tokens -> list[str]
+    df["tokens_sintaksis_json"] = df.get("tokens_sintaksis_json", None).apply(_tokens_to_text)
 
-    if cfg.lowercase:
-        df["tokens_sintaksis_json"] = df["tokens_sintaksis_json"].apply(lambda toks: [t.lower() for t in toks])
-
+    # buat dokumen TF-IDF dari join token
     df["text_sintaksis"] = df["tokens_sintaksis_json"].apply(lambda toks: " ".join(toks).strip())
 
     df = df.dropna(subset=["tgl_submit"])
@@ -296,62 +275,33 @@ def fetch_source(engine: Engine, cfg: TfidfConfig) -> pd.DataFrame:
 
 
 # =============================================================================
-# TF / IDF / TFIDF helpers
+# TF-IDF helpers
 # =============================================================================
 
-def build_idf_dict(vectorizer: TfidfVectorizer) -> Dict[str, float]:
-    feats = vectorizer.get_feature_names_out()
-    idf_vals = vectorizer.idf_
-    out: Dict[str, float] = {}
-    for tok, idfv in zip(feats, idf_vals):
-        out[str(tok)] = float(idfv)
-    return out
+def row_sparse_to_dict(
+    vectorizer: TfidfVectorizer,
+    X_row,
+    topn: Optional[int] = None
+) -> Dict[str, float]:
+    row = X_row.tocsr()
+    idx = row.indices
+    val = row.data
 
-
-def tf_dict_from_tokens(tokens: List[str], vocab_set: set[str]) -> Dict[str, float]:
-    n = len(tokens)
-    if n == 0:
+    if val.size == 0:
         return {}
-    cnt = Counter(tok for tok in tokens if tok in vocab_set)
-    out: Dict[str, float] = {}
-    for tok, c in cnt.items():
-        out[str(tok)] = float(c) / float(n)
-    return out
 
+    if topn is not None and val.size > topn:
+        top_pos = np.argpartition(-val, topn - 1)[:topn]
+        idx = idx[top_pos]
+        val = val[top_pos]
 
-def tfidf_from_tf_idf(tf: Dict[str, float], idf: Dict[str, float]) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    for tok, tfv in tf.items():
-        idfv = idf.get(tok)
-        if idfv is None:
-            continue
-        out[str(tok)] = float(tfv) * float(idfv)
-    return out
-
-
-def maybe_topn(d: Dict[str, float], topn: Optional[int]) -> Dict[str, float]:
-    if not d:
-        return {}
-    items = sorted(d.items(), key=lambda kv: kv[1], reverse=True)
-    if topn is not None and int(topn) > 0:
-        items = items[: int(topn)]
-    out: Dict[str, float] = {}
-    for k, v in items:
-        out[str(k)] = float(v)
-    return out
-
-
-def dense_vec_from_tfidf(tfidf: Dict[str, float], feat_index: Dict[str, int], n_features: int) -> List[float]:
-    vec = np.zeros(n_features, dtype=np.float32)
-    for tok, v in tfidf.items():
-        j = feat_index.get(tok)
-        if j is not None:
-            vec[j] = float(v)
-    return vec.astype(float).tolist()
+    feature_names = vectorizer.get_feature_names_out()
+    d = {str(feature_names[i]): float(v) for i, v in zip(idx, val)}
+    return dict(sorted(d.items(), key=lambda kv: -kv[1]))
 
 
 # =============================================================================
-# Main run
+# Main
 # =============================================================================
 
 def run_tfidf(engine: Engine, cfg: TfidfConfig, dry_run: bool = False) -> str:
@@ -361,55 +311,32 @@ def run_tfidf(engine: Engine, cfg: TfidfConfig, dry_run: bool = False) -> str:
     if df.empty:
         raise RuntimeError("Tidak ada data yang memenuhi filter / token kosong.")
 
+    texts = df["text_sintaksis"].tolist()
+
     vectorizer = TfidfVectorizer(
         min_df=cfg.min_df,
         max_df=cfg.max_df,
         max_features=cfg.max_features,
         ngram_range=(cfg.ngram_min, cfg.ngram_max),
-        lowercase=False,          # tokens sudah ditangani manual
-        analyzer="word",
-        token_pattern=r"(?u)\b\w+\b",
+        lowercase=cfg.lowercase,
         dtype=np.float32,
-        use_idf=True,
-        smooth_idf=True,
-        sublinear_tf=False,
-        norm=None,               # kita hitung TF-IDF manual
     )
 
-    texts = df["text_sintaksis"].tolist()
-    vectorizer.fit(texts)
-
-    features = vectorizer.get_feature_names_out()
-    n_features = int(len(features))
-    vocab_set = set(str(x) for x in features)
-
-    idf_dict = build_idf_dict(vectorizer)
-
-    feat_index: Dict[str, int] = {}
-    feature_names_list: List[str] = []
-    for i, tok in enumerate(features):
-        s = str(tok)
-        feat_index[s] = int(i)
-        feature_names_list.append(s)
+    X = vectorizer.fit_transform(texts)
 
     run_id = str(uuid.uuid4())
     run_time = datetime.now()
 
+    n_features = int(len(vectorizer.get_feature_names_out()))
+
     params_json: Dict[str, Any] = {
-        "approach": "tfidf_unigram_manual_tf_x_idf",
-        "tf": {"type": "normalized_tf", "formula": "count(term)/len(tokens)"},
-        "idf": {"source": "sklearn.TfidfVectorizer.idf_", "smooth_idf": True, "stored_in": "runs.idf_json"},
-        "tfidf": {"formula": "tf * idf", "norm": None},
-        "tfidf_vec": {
-            "dense": bool(cfg.store_vec_dense),
-            "feature_order": "runs.feature_names_json",
-        },
-        "vectorizer": {
+        "approach": "tfidf_unigram_from_tokens_sintaksis_json",
+        "tfidf": {
             "min_df": int(cfg.min_df),
             "max_df": float(cfg.max_df),
             "max_features": None if cfg.max_features is None else int(cfg.max_features),
             "ngram_range": [cfg.ngram_min, cfg.ngram_max],
-            "lowercase_tokens": bool(cfg.lowercase),
+            "lowercase": bool(cfg.lowercase),
             "n_features": n_features,
         },
         "source": {
@@ -419,10 +346,7 @@ def run_tfidf(engine: Engine, cfg: TfidfConfig, dry_run: bool = False) -> str:
         },
         "store": {
             "store_topn": cfg.store_topn,
-            "idf_stored": "runs_only",
-            "tf_stored": "vectors.tf_json",
-            "tfidf_stored": "vectors.tfidf_json",
-            "tfidf_vec_stored": "vectors.tfidf_vec_json" if cfg.store_vec_dense else "none",
+            "format": "jsonb_feature_to_weight_sparse",
         },
     }
 
@@ -435,20 +359,12 @@ def run_tfidf(engine: Engine, cfg: TfidfConfig, dry_run: bool = False) -> str:
     }
 
     print("[INFO] n_rows:", len(df))
-    print("[INFO] n_features:", n_features)
+    print("[INFO] n_features (unigram):", n_features)
 
+    # Build vector rows
+    records = df.to_dict("records")
     rows: List[Dict[str, Any]] = []
-    for r in df.to_dict("records"):
-        tokens: List[str] = r["tokens_sintaksis_json"]
-
-        tf_full = tf_dict_from_tokens(tokens, vocab_set=vocab_set)
-        tf_json = maybe_topn(tf_full, cfg.store_topn)
-
-        tfidf_full = tfidf_from_tf_idf(tf_full, idf_dict)
-        tfidf_json = maybe_topn(tfidf_full, cfg.store_topn)
-
-        vec_json = dense_vec_from_tfidf(tfidf_full, feat_index, n_features) if cfg.store_vec_dense else None
-
+    for i, r in enumerate(records):
         rows.append({
             "run_id": run_id,
             "incident_number": r["incident_number"],
@@ -457,46 +373,27 @@ def run_tfidf(engine: Engine, cfg: TfidfConfig, dry_run: bool = False) -> str:
             "assignee": r["assignee"],
             "modul": r["modul"],
             "sub_modul": r["sub_modul"],
-
-            "subject_tokens_json": tokens,
-            "tf_json": tf_json,
-            "tfidf_json": tfidf_json,
-            "tfidf_vec_json": vec_json,
-
-            "tokens_sintaksis_json": tokens,
-            "text_sintaksis": r["text_sintaksis"],
+            "tokens_sintaksis_json": r["tokens_sintaksis_json"],  # list[str]
+            "text_sintaksis": r["text_sintaksis"],                # joined
+            "tfidf_json": row_sparse_to_dict(vectorizer, X[i], topn=cfg.store_topn),
         })
 
-    # RUN ROW (IDF + FEATURE NAMES disimpan sekali)
     df_runs = pd.DataFrame([{
         "run_id": run_id,
         "run_time": run_time,
-        "approach": "tfidf_unigram_manual_tf_x_idf",
+        "approach": "tfidf_unigram_from_tokens_sintaksis_json",
         "params_json": params_json,
         "data_range": data_range,
         "notes": None,
-        "idf_json": idf_dict,
-        "feature_names_json": feature_names_list,
     }])
 
     df_vec = pd.DataFrame(rows)
 
-    # JSONB adapt
+    # Adapt JSONB columns
     df_runs["params_json"] = df_runs["params_json"].apply(Json)
     df_runs["data_range"] = df_runs["data_range"].apply(Json)
-    df_runs["idf_json"] = df_runs["idf_json"].apply(Json)
-    df_runs["feature_names_json"] = df_runs["feature_names_json"].apply(Json)
-
-    json_cols = [
-        "subject_tokens_json",
-        "tf_json",
-        "tfidf_json",
-        "tfidf_vec_json",
-        "tokens_sintaksis_json",
-    ]
-    for c in json_cols:
-        if c in df_vec.columns:
-            df_vec[c] = df_vec[c].apply(lambda x: Json(x) if x is not None else None)
+    df_vec["tokens_sintaksis_json"] = df_vec["tokens_sintaksis_json"].apply(Json)
+    df_vec["tfidf_json"] = df_vec["tfidf_json"].apply(Json)
 
     elapsed = time.time() - t0
     print(f"[OK] run_id={run_id} rows={len(df_vec):,} elapsed={elapsed:.1f}s")
