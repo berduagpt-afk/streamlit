@@ -139,16 +139,40 @@ def get_embedding_run_id_from_runs(modeling_id_text: str) -> Optional[str]:
     return None
 
 
-def compute_dbcv(X: np.ndarray, labels: np.ndarray, metric: str = "euclidean") -> float:
+def compute_dbcv_safe(X: np.ndarray, labels: np.ndarray, metric: str = "euclidean") -> Optional[float]:
     """
-    DBCV via hdbscan.validity.validity_index
+    DBCV via hdbscan.validity.validity_index dengan guard supaya tidak memicu warning:
+    'zero-size array to reduction operation maximum which has no identity'
     """
+    if X is None or labels is None:
+        return None
+    if not isinstance(X, np.ndarray) or not isinstance(labels, np.ndarray):
+        return None
+    if X.size == 0 or labels.size == 0:
+        return None
+    if X.shape[0] != labels.shape[0]:
+        return None
+
+    uniq = np.unique(labels)
+    n_clusters = int(np.sum(uniq != -1))
+    n_non_noise = int(np.sum(labels != -1))
+
+    # syarat minimal agar DBCV bermakna/stabil
+    if n_non_noise < 5 or n_clusters < 2:
+        return None
+
+    # kasus degeneratif: semua vektor sama persis → jarak 0 semua
+    try:
+        if np.allclose(X.max(axis=0), X.min(axis=0)):
+            return None
+    except Exception:
+        return None
+
     try:
         from hdbscan.validity import validity_index
-    except Exception as e:
-        raise RuntimeError("Package 'hdbscan' belum tersedia. Install: pip install hdbscan") from e
-
-    return float(validity_index(X, labels, metric=metric))
+        return float(validity_index(X, labels, metric=metric))
+    except Exception:
+        return None
 
 
 # ======================================================
@@ -158,7 +182,7 @@ st.title("Evaluasi Clustering Semantik — DBCV (HDBSCAN)")
 st.caption("DBCV dihitung dari embedding (Opsi A: embedding_run_id diambil dari tabel runs/params_json).")
 
 with st.expander("Pengaturan", expanded=True):
-    c1, c2, c3 = st.columns([1.2, 1, 1])
+    c1, c2, c3, c4 = st.columns([1.2, 1, 1, 1])
     with c1:
         max_points = st.number_input(
             "Maksimum titik untuk evaluasi (sampling acak)",
@@ -177,6 +201,16 @@ with st.expander("Pengaturan", expanded=True):
         )
     with c3:
         seed = st.number_input("Random seed", min_value=1, max_value=999999, value=42, step=1)
+    with c4:
+        min_cluster_size_dbcv = st.number_input(
+            "Min ukuran cluster utk DBCV",
+            min_value=2,
+            max_value=50,
+            value=3,
+            step=1,
+            help="DBCV tidak stabil jika banyak cluster berukuran sangat kecil (1–2). "
+                 "Nilai 3 atau 5 biasanya aman.",
+        )
 
 rng = np.random.default_rng(int(seed))
 
@@ -248,13 +282,16 @@ def load_member_keys(modeling_id_text: str) -> List[str]:
     )
     with engine.begin() as conn:
         rows = conn.execute(q, {"mid": modeling_id_text}).fetchall()
-    return [r[0] for r in rows if r and r[0] is not None]
+    # strip untuk menghindari mismatch join karena whitespace
+    return [str(r[0]).strip() for r in rows if r and r[0] is not None]
 
 
+@st.cache_data(show_spinner=True, ttl=120)
 @st.cache_data(show_spinner=True, ttl=120)
 def load_members_by_keys(modeling_id_text: str, keys: List[str]) -> pd.DataFrame:
     if not keys:
         return pd.DataFrame()
+
     q = text(
         f"""
         SELECT
@@ -270,11 +307,12 @@ def load_members_by_keys(modeling_id_text: str, keys: List[str]) -> pd.DataFrame
             outlier_score
         FROM {SCHEMA}.{T_MEMBERS}
         WHERE modeling_id::text = :mid
-          AND incident_number::text = ANY(:keys)
+          AND incident_number::text = ANY(CAST(:keys AS text[]))
         """
     )
     with engine.begin() as conn:
         return pd.read_sql(q, conn, params={"mid": modeling_id_text, "keys": keys})
+
 
 
 n_total = count_members(mid)
@@ -292,12 +330,15 @@ else:
     keys_sample = all_keys
 
 # pastikan list str + unik (ringankan query)
-keys_sample = sorted(set(map(str, keys_sample)))
+keys_sample = sorted(set(map(lambda x: str(x).strip(), keys_sample)))
 
 df_mem = load_members_by_keys(mid, keys_sample)
 if df_mem.empty:
     st.warning("Query members kosong setelah sampling.")
     st.stop()
+
+# normalisasi key untuk join
+df_mem["incident_number"] = df_mem["incident_number"].astype(str).str.strip()
 
 
 # ======================================================
@@ -325,12 +366,13 @@ if col_embedding_json is None or col_vec_key is None or col_vec_run is None:
     )
     st.stop()
 
-inc_list = sorted(set(df_mem["incident_number"].astype(str).tolist()))
+inc_list = sorted(set(df_mem["incident_number"].astype(str).str.strip().tolist()))
 if not inc_list:
     st.error("incident_number kosong pada members.")
     st.stop()
 
 
+@st.cache_data(show_spinner=True, ttl=120)
 @st.cache_data(show_spinner=True, ttl=120)
 def load_embeddings_for_members(emb_run_id_text: str, inc_arr: List[str]) -> pd.DataFrame:
     if not inc_arr:
@@ -342,7 +384,7 @@ def load_embeddings_for_members(emb_run_id_text: str, inc_arr: List[str]) -> pd.
             {col_embedding_json} AS embedding_json
         FROM {SCHEMA}.{T_EMB_VECTORS}
         WHERE {col_vec_run}::text = :rid
-          AND {col_vec_key}::text = ANY(:inc_arr)
+          AND {col_vec_key}::text = ANY(CAST(:inc_arr AS text[]))
         """
     )
     with engine.begin() as conn:
@@ -357,6 +399,8 @@ if df_vec.empty:
     )
     st.stop()
 
+df_vec["key_ticket"] = df_vec["key_ticket"].astype(str).str.strip()
+
 merged = df_mem.merge(df_vec, left_on="incident_number", right_on="key_ticket", how="inner")
 if merged.empty:
     st.error("Join members ↔ embedding_vectors menghasilkan 0 baris (key tidak cocok).")
@@ -365,31 +409,33 @@ if merged.empty:
     st.write("Contoh key_ticket (vectors):", df_vec["key_ticket"].head(3).tolist())
     st.stop()
 
-# parse embedding_json + label (pakai is_noise untuk memaksa noise -> -1)
-emb_list: List[List[float]] = []
-lab_list: List[int] = []
+# ======================================================
+# 🧠 Parse embedding_json + label (noise -> -1) [lebih efisien]
+# ======================================================
+objs = merged["embedding_json"].map(safe_json_loads)
+valid_mask = objs.map(lambda x: isinstance(x, list) and len(x) > 0)
+merged2 = merged.loc[valid_mask].copy()
 
-for _, r in merged.iterrows():
-    obj = safe_json_loads(r["embedding_json"])
-    if isinstance(obj, list) and len(obj) > 0:
-        cid = int(r["cluster_id"])
-        if bool(r.get("is_noise", False)):
-            cid = -1
-        emb_list.append(obj)
-        lab_list.append(cid)
-
-if len(emb_list) < 10:
+if merged2.shape[0] < 10:
     st.error("Embedding terlalu sedikit setelah parsing. Pastikan embedding_json berupa list angka.")
     st.stop()
 
+emb_list: List[List[float]] = merged2["embedding_json"].map(safe_json_loads).tolist()
+lab_arr = merged2["cluster_id"].astype(int).to_numpy()
+is_noise_arr = merged2.get("is_noise", False)
+if not isinstance(is_noise_arr, pd.Series):
+    is_noise_arr = pd.Series([False] * len(merged2), index=merged2.index)
+is_noise_arr = is_noise_arr.fillna(False).astype(bool).to_numpy()
+lab_arr = np.where(is_noise_arr, -1, lab_arr)
+
 # penting: float64 agar tidak warning "expected double_t but got float"
 X = np.asarray(emb_list, dtype=np.float64)
-labels = np.asarray(lab_list, dtype=np.int32)
+labels = np.asarray(lab_arr, dtype=np.int32)
 feature_mode = f"Embedding ({X.shape[1]} dim) | emb_run_id={emb_run_id}"
 
 
 # ======================================================
-# 📊 KPI & DBCV (overall vs tanpa noise)
+# 📊 KPI & DBCV (overall vs tanpa noise vs valid-min-size)
 # ======================================================
 n_points = int(X.shape[0])
 n_noise = int((labels == -1).sum())
@@ -404,10 +450,11 @@ k2.metric("Jumlah titik dihitung", f"{n_points:,}")
 k3.metric("Cluster (non-noise)", f"{n_clusters:,}")
 k4.metric("Noise (-1)", f"{n_noise:,}")
 
-k5, k6, k7 = st.columns(3)
+k5, k6, k7, k8 = st.columns(4)
 k5.metric("Coverage non-noise", f"{coverage:.2%}")
 k6.metric("DBCV (overall)", "-")
 k7.metric("DBCV (tanpa noise)", "-")
+k8.metric(f"DBCV (min size ≥ {int(min_cluster_size_dbcv)})", "-")
 
 if metric in ("euclidean", "manhattan") and X.shape[1] >= 256 and n_points > 20000:
     st.warning("DBCV pada embedding dimensi tinggi dengan >20k titik bisa berat. Pertimbangkan turunkan max_points.")
@@ -420,45 +467,67 @@ sizes = (
     .sort_values(["cluster_id"])
 )
 
-with st.spinner("Menghitung DBCV (overall & tanpa noise)..."):
-    dbcv_overall = None
-    dbcv_no_noise = None
+# siapkan mask utk cluster minimal size (menghindari warning zero-size internal graph)
+cluster_sizes_non_noise = pd.Series(labels[labels != -1]).value_counts()
+valid_clusters = cluster_sizes_non_noise[cluster_sizes_non_noise >= int(min_cluster_size_dbcv)].index.to_numpy()
+
+mask_min_size = np.isin(labels, valid_clusters)
+X_min = X[mask_min_size]
+y_min = labels[mask_min_size]
+
+with st.spinner("Menghitung DBCV (overall, tanpa noise, dan min-size)..."):
     err = None
     try:
-        # 1) DBCV OVERALL (termasuk noise)
-        if n_non_noise < 5 or n_clusters < 2:
-            err = (
-                "DBCV membutuhkan struktur klaster memadai. "
-                f"Saat ini non-noise={n_non_noise}, n_clusters={n_clusters}. "
-                "Coba modeling_id lain atau set parameter HDBSCAN agar menghasilkan >1 klaster non-noise."
-            )
-        else:
-            dbcv_overall = compute_dbcv(X, labels, metric=metric)
+        # 1) OVERALL (termasuk noise)
+        dbcv_overall = compute_dbcv_safe(X, labels, metric=metric)
 
-        # 2) DBCV TANPA NOISE (hanya anggota cluster valid)
-        mask = labels != -1
-        X_nn = X[mask]
-        y_nn = labels[mask]
-        uniq_nn = np.unique(y_nn)
-        if len(y_nn) >= 5 and len(uniq_nn) >= 2:
-            dbcv_no_noise = compute_dbcv(X_nn, y_nn, metric=metric)
+        # 2) TANPA NOISE (hanya anggota cluster valid)
+        mask_nn = labels != -1
+        X_nn = X[mask_nn]
+        y_nn = labels[mask_nn]
+        dbcv_no_noise = compute_dbcv_safe(X_nn, y_nn, metric=metric)
+
+        # 3) MIN CLUSTER SIZE (hanya cluster non-noise dengan ukuran >= threshold)
+        dbcv_min_size = compute_dbcv_safe(X_min, y_min, metric=metric)
 
     except Exception as e:
+        dbcv_overall, dbcv_no_noise, dbcv_min_size = None, None, None
         err = str(e)
 
 # Update KPI DBCV
 k6.metric("DBCV (overall)", fmt_float(dbcv_overall, 4) if dbcv_overall is not None else "-")
 k7.metric("DBCV (tanpa noise)", fmt_float(dbcv_no_noise, 4) if dbcv_no_noise is not None else "-")
+k8.metric(
+    f"DBCV (min size ≥ {int(min_cluster_size_dbcv)})",
+    fmt_float(dbcv_min_size, 4) if dbcv_min_size is not None else "-"
+)
 
 if err:
     st.warning(err)
-else:
-    if dbcv_overall is not None:
-        st.success(f"DBCV (overall) = **{fmt_float(dbcv_overall, 4)}**")
-        st.caption("Overall menilai kualitas struktur global termasuk penalti dari noise.")
-    if dbcv_no_noise is not None:
-        st.info(f"DBCV (tanpa noise) = **{fmt_float(dbcv_no_noise, 4)}**")
-        st.caption("Tanpa noise menilai kualitas internal cluster yang dianggap valid oleh HDBSCAN.")
+
+# Narasi interpretasi singkat
+with st.expander("Interpretasi singkat", expanded=True):
+    st.markdown(
+        f"""
+- **Coverage non-noise**: {coverage:.2%} (semakin tinggi → semakin banyak tiket berhasil dikelompokkan, semakin rendah → model lebih “ketat”).
+- Jika DBCV **kosong**/“-”, biasanya karena **cluster sangat kecil (1–2 anggota)** atau **jumlah cluster efektif < 2**, sehingga secara matematis metrik tidak stabil/terdefinisi.
+- Opsi **DBCV (min size ≥ {int(min_cluster_size_dbcv)})** menghitung DBCV hanya pada klaster yang ukurannya memadai untuk evaluasi.
+        """
+    )
+
+# Informasi jumlah cluster valid
+n_valid_clusters = int(len(valid_clusters))
+st.caption(f"Cluster valid utk DBCV min-size: **{n_valid_clusters}** dari total **{n_clusters}** (non-noise).")
+
+if dbcv_overall is not None:
+    st.success(f"DBCV (overall) = **{fmt_float(dbcv_overall, 4)}**")
+    st.caption("Overall menilai kualitas struktur global termasuk penalti dari noise.")
+if dbcv_no_noise is not None:
+    st.info(f"DBCV (tanpa noise) = **{fmt_float(dbcv_no_noise, 4)}**")
+    st.caption("Tanpa noise menilai kualitas internal cluster yang dianggap valid oleh HDBSCAN.")
+if dbcv_min_size is not None:
+    st.info(f"DBCV (min size ≥ {int(min_cluster_size_dbcv)}) = **{fmt_float(dbcv_min_size, 4)}**")
+    st.caption("Min-size mengurangi bias/metrik tidak stabil akibat banyak klaster mikro.")
 
 
 # ======================================================
@@ -534,11 +603,12 @@ except Exception as e:
 # ======================================================
 with st.expander("Catatan metodologis (untuk tesis)", expanded=False):
     st.markdown(
-        """
+        f"""
 - DBCV adalah metrik validasi internal untuk **density-based clustering** yang menilai kualitas klaster dari aspek **kepadatan** dan **pemisahan**.
-- Pada halaman ini, evaluasi dilakukan dalam dua skenario:
+- Pada halaman ini, evaluasi dilakukan dalam tiga skenario:
   1) **DBCV (overall)**: seluruh data termasuk noise, sehingga mencerminkan kualitas struktur global + penalti noise.
   2) **DBCV (tanpa noise)**: hanya anggota cluster valid, sehingga menilai kualitas internal cluster yang dipertahankan HDBSCAN.
+  3) **DBCV (min size ≥ {int(min_cluster_size_dbcv)})**: hanya klaster non-noise dengan ukuran minimum tertentu untuk menghindari ketidakstabilan metrik akibat klaster mikro (1–2 anggota).
 - Coverage non-noise menunjukkan proporsi data yang berhasil dikelompokkan menjadi cluster (bukan noise).
         """
     )

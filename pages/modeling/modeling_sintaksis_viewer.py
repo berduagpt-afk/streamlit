@@ -246,6 +246,51 @@ def load_runs(_engine) -> pd.DataFrame:
     df["threshold_r"] = df["threshold"].round(4)
     return df
 
+@st.cache_data(show_spinner=False, ttl=60)
+def load_data_timerange_for_job(_engine, job_id: str) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """
+    Ambil rentang waktu DATA untuk satu job_id.
+    Prioritas:
+      1) members.tgl_submit
+      2) fallback ke clusters.min_time/max_time
+    Output: (min_time, max_time) sebagai pd.Timestamp atau (None, None) jika tidak ada.
+    """
+    if not job_id or job_id == "NO_JOB":
+        return None, None
+
+    # --- 1) PRIORITAS: members.tgl_submit ---
+    q1 = f"""
+    SELECT
+        MIN(tgl_submit) AS min_time,
+        MAX(tgl_submit) AS max_time
+    FROM {SCHEMA}.{T_MEMBERS}
+    WHERE job_id = CAST(:job_id AS uuid)
+      AND tgl_submit IS NOT NULL
+    """
+    df1 = pd.read_sql(text(q1), _engine, params={"job_id": job_id})
+    if not df1.empty:
+        min_t = pd.to_datetime(df1.loc[0, "min_time"], errors="coerce")
+        max_t = pd.to_datetime(df1.loc[0, "max_time"], errors="coerce")
+        if pd.notna(min_t) and pd.notna(max_t):
+            return min_t, max_t
+
+    # --- 2) FALLBACK: clusters.min_time/max_time ---
+    q2 = f"""
+    SELECT
+        MIN(min_time) AS min_time,
+        MAX(max_time) AS max_time
+    FROM {SCHEMA}.{T_CLUSTERS}
+    WHERE job_id = CAST(:job_id AS uuid)
+      AND (min_time IS NOT NULL OR max_time IS NOT NULL)
+    """
+    df2 = pd.read_sql(text(q2), _engine, params={"job_id": job_id})
+    if not df2.empty:
+        min_t2 = pd.to_datetime(df2.loc[0, "min_time"], errors="coerce")
+        max_t2 = pd.to_datetime(df2.loc[0, "max_time"], errors="coerce")
+        if pd.notna(min_t2) and pd.notna(max_t2):
+            return min_t2, max_t2
+
+    return None, None
 
 @st.cache_data(show_spinner=False, ttl=60)
 def load_clusters(_engine, modeling_id: str) -> pd.DataFrame:
@@ -369,8 +414,8 @@ st.subheader("Ringkasan Job")
 tfidf_run_id = runs_job["tfidf_run_id"].dropna().astype(str).head(1).tolist()
 tfidf_run_id = tfidf_run_id[0] if tfidf_run_id else ""
 
-min_rt = runs_job["run_time"].min()
-max_rt = runs_job["run_time"].max()
+min_dt, max_dt = load_data_timerange_for_job(engine, job_id)
+
 
 c1, c2, c3, c4, c5 = st.columns(5)
 kpi_row(
@@ -379,8 +424,10 @@ kpi_row(
         ("Job ID", job_id),
         ("Jumlah Run", f"{len(runs_job):,}"),
         ("TF-IDF Run ID", tfidf_run_id or "NA"),
-        ("Rentang Waktu", f"{min_rt.strftime('%Y-%m-%d %H:%M') if pd.notna(min_rt) else 'NA'} → "
-                          f"{max_rt.strftime('%Y-%m-%d %H:%M') if pd.notna(max_rt) else 'NA'}"),
+        ("Rentang Waktu (Data)",
+            f"{min_dt.strftime('%Y-%m-%d') if isinstance(min_dt, pd.Timestamp) and pd.notna(min_dt) else 'NA'} → "
+            f"{max_dt.strftime('%Y-%m-%d') if isinstance(max_dt, pd.Timestamp) and pd.notna(max_dt) else 'NA'}"),
+
         ("Approach", str(runs_job["approach"].dropna().unique()[:1].tolist()[0]) if runs_job["approach"].notna().any() else "NA"),
     ],
 )
@@ -426,23 +473,23 @@ runs_job["avg_cluster_size_ge2"] = (
 runs_job.loc[tickets_multi < 0, "avg_cluster_size_ge2"] = pd.NA
 
 view_cols = [
-    "run_time",
+    # "run_time",
     "threshold_r",
-    "knn_k",
+    # "knn_k",
     "n_rows",
     "n_clusters_all",
     "n_singletons",
-    "n_clusters_multi",
+    # "n_clusters_multi",
     "n_clusters_multi_calc",
     "avg_cluster_size_all",
     "avg_cluster_size_ge2",
     "singleton_cluster_rate",
-    "vocab_size",
-    "nnz",
-    "elapsed_sec",
+    # "vocab_size",
+    # "nnz",
+    # "elapsed_sec",
     # legacy
-    "window_days",
-    "min_cluster_size",
+    # "window_days",
+    # "min_cluster_size",
     "modeling_id",
 ]
 runs_table = runs_job[[c for c in view_cols if c in runs_job.columns]].copy()
@@ -508,8 +555,8 @@ with g3:
 with g4:
     st.altair_chart(chart_line(plot_df, "threshold", "avg_cluster_size_ge2_f", "Threshold vs Avg Cluster Size (clusters >=2)", tooltip), use_container_width=True)
 
-st.altair_chart(chart_line(plot_df, "threshold", "elapsed_sec_f", "Threshold vs Runtime (elapsed_sec)", tooltip), use_container_width=True)
-st.altair_chart(chart_scatter(plot_df, "n_clusters_all_f", "elapsed_sec_f", "Runtime vs Total Clusters", tooltip), use_container_width=True)
+# st.altair_chart(chart_line(plot_df, "threshold", "elapsed_sec_f", "Threshold vs Runtime (elapsed_sec)", tooltip), use_container_width=True)
+# st.altair_chart(chart_scatter(plot_df, "n_clusters_all_f", "elapsed_sec_f", "Runtime vs Total Clusters", tooltip), use_container_width=True)
 
 st.divider()
 
@@ -520,13 +567,14 @@ st.subheader("Detail Run (Opsional / Drill-down)")
 st.caption("Pilih satu run untuk melihat data clusters/members. Ini tidak wajib untuk analisis job-level.")
 
 def _mk_run_label(r: pd.Series) -> str:
-    rt = r["run_time"].strftime("%Y-%m-%d %H:%M") if pd.notna(r["run_time"]) else "NA"
+    # rt = r["run_time"].strftime("%Y-%m-%d %H:%M") if pd.notna(r["run_time"]) else "NA"
     thr = r.get("threshold_r")
-    k = r.get("knn_k")
-    ncl = r.get("n_clusters_all")
-    ns = r.get("n_singletons")
+    # k = r.get("knn_k")
+    # ncl = r.get("n_clusters_all")
+    # ns = r.get("n_singletons")
     mid = r.get("modeling_id")
-    return f"{rt} | thr={thr} k={k} | clusters={ncl} singletons={ns} | {mid}"
+    # return f"{rt} | thr={thr} k={k} | clusters={ncl} singletons={ns} | {mid}"
+    return f"thr={thr} | modeling_id={mid}"
 
 run_labels = runs_job.apply(_mk_run_label, axis=1).tolist()
 run_map = dict(zip(run_labels, runs_job["modeling_id"].astype(str).tolist()))
@@ -535,21 +583,23 @@ sel_run = st.selectbox("Pilih run untuk detail", options=run_labels, index=0)
 mid = run_map[sel_run]
 row = runs_job.loc[runs_job["modeling_id"].astype(str) == mid].iloc[0]
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3, c4 = st.columns(4)
 kpi_row(
-    [c1, c2, c3, c4, c5],
+    [c1, c2, c3, c4],
     [
         ("Threshold", str(row.get("threshold_r"))),
-        ("kNN-k", str(row.get("knn_k"))),
+        # ("kNN-k", str(row.get("knn_k"))),
         ("n_clusters_all", f"{_int(row.get('n_clusters_all'), 0):,}"),
         ("n_singletons", f"{_int(row.get('n_singletons'), 0):,}"),
-        ("elapsed_sec", f"{_num(row.get('elapsed_sec'), 0):,.2f}"),
+        # ("elapsed_sec", f"{_num(row.get('elapsed_sec'), 0):,.2f}"),
+        ("n_clusters_multi_calc", f"{_int(row.get('n_clusters_multi_calc'), 0):,}"),
+        
     ]
 )
 
-st.write(f"**Modeling ID:** `{mid}`")
-st.write(f"**Notes:** {row.get('notes','')}")
-st.write(f"**TF-IDF Run ID:** `{_fmt_uuid(row.get('tfidf_run_id'))}`")
+# st.write(f"**Modeling ID:** `{mid}`")
+# st.write(f"**Notes:** {row.get('notes','')}")
+# st.write(f"**TF-IDF Run ID:** `{_fmt_uuid(row.get('tfidf_run_id'))}`")
 if show_raw_params:
     st.json(_safe_json(row.get("params_json")))
 

@@ -105,14 +105,14 @@ def load_members(modeling_id: str, cluster_id: int, limit: int) -> pd.DataFrame:
     q = f"""
         SELECT
             m.cluster_id,
-            m.is_noise,
+        -- m.is_noise,
             m.incident_number,
             m.tgl_submit,
             m.site,
             m.modul,
-            m.sub_modul,
-            m.prob,
-            m.outlier_score,
+        --    m.sub_modul,
+        --    m.prob,
+        --    m.outlier_score,
             s.text_semantic
         FROM {SCHEMA}.{T_MEMBERS} m
         LEFT JOIN {SCHEMA}.{T_SEMANTIK} s
@@ -182,12 +182,12 @@ with st.sidebar:
 # ======================================================
 run = df_runs[df_runs["modeling_id"] == modeling_id].iloc[0]
 
-c1, c2, c3, c4, c5 = st.columns(5)
+c1, c2, c3 = st.columns(3)
 c1.metric("Total Tiket", f"{int(run.n_rows):,}")
 c2.metric("Jumlah Cluster", f"{int(run.n_clusters):,}")
 c3.metric("Noise", f"{int(run.n_noise):,}")
-c4.metric("Silhouette", f"{run.silhouette:.3f}" if run.silhouette is not None else "—")
-c5.metric("DBI", f"{run.dbi:.3f}" if run.dbi is not None else "—")
+# c4.metric("Silhouette", f"{run.silhouette:.3f}" if run.silhouette is not None else "—")
+# c5.metric("DBI", f"{run.dbi:.3f}" if run.dbi is not None else "—")
 
 with st.expander("ℹ️ Parameter Modeling (params_json)"):
     st.json(run.params_json)
@@ -209,17 +209,24 @@ if df_clusters.empty:
         "(kemungkinan semua tiket noise atau filter noise aktif)."
     )
 else:
+    # ✅ Top 20 cluster terbesar untuk grafik (tetap tampilkan tabel full di bawah)
+    df_top20 = df_clusters.sort_values("cluster_size", ascending=False).head(20).copy()
+
     chart = (
-        alt.Chart(df_clusters)
+        alt.Chart(df_top20)
         .mark_bar()
         .encode(
             x=alt.X("cluster_size:Q", title="Ukuran Cluster"),
             y=alt.Y("cluster_id:N", sort="-x", title="Cluster ID"),
             tooltip=["cluster_id", "cluster_size"],
         )
+        .properties(height=420)
     )
     st.altair_chart(chart, use_container_width=True)
+
+    st.caption(f"Grafik menampilkan **Top 20** cluster terbesar dari total **{len(df_clusters):,}** cluster (setelah filter).")
     st.dataframe(df_clusters, use_container_width=True)
+
 
 
 # ======================================================
