@@ -2,11 +2,11 @@
 Evaluasi Temporal (Sessionization / Temporal Split) — Pendekatan Semantik (HDBSCAN)
 =================================================================================
 
-PATCH FINAL (berdasarkan review):
+PATCH FINAL:
 1) Eligible cluster:
    - Jika tabel clusters punya kolom span_days => pakai rule span_days (strict/gt/all)
-   - Jika span_days TIDAK ada => hitung span dari members (MIN/MAX event_time) per cluster
-     lalu terapkan rule yang setara (strict/gt/all) tanpa memproses cluster yang pasti tidak bisa split.
+   - Jika span_days TIDAK ada => hitung span dari members (MIN/MAX event_time per cluster)
+     lalu terapkan rule yang setara (strict/gt/all).
 
 2) Kolom metadata opsional (site/assignee/modul/sub_modul):
    - Jika kolom tidak ada di members, akan di-select sebagai NULL::text.
@@ -14,8 +14,12 @@ PATCH FINAL (berdasarkan review):
 3) Idempotent save:
    - DELETE subset (modeling_id, window_days, time_col) sebelum insert ulang.
 
+4) PATCH penting (WINDOW SANITY):
+   - Sorting eksplisit sebelum hitung gap
+   - Print distribusi gap_days untuk melihat apakah window 7/14/30 benar-benar berpengaruh
+
 Cara pakai:
-python run_temporal_semantik.py --modeling-id <UUID> --windows 7,14,30 --time-col tgl_submit
+python run_temporal_semantik.py --modeling-id <UUID> --windows 7,14,30 --time-col tgl_submit --eligible-rule span_days_gt
 """
 
 from __future__ import annotations
@@ -143,11 +147,6 @@ def table_has_column(engine: Engine, schema: str, table: str, column: str) -> bo
 
 
 def select_optional_text_cols(engine: Engine, schema: str, table: str, cols: list[str], alias_prefix: str = "m") -> str:
-    """
-    Build potongan SELECT untuk kolom teks opsional.
-    Jika kolom ada -> "m.col AS col"
-    Jika kolom tidak ada -> "NULL::text AS col"
-    """
     parts: list[str] = []
     for c in cols:
         if table_has_column(engine, schema, table, c):
@@ -164,7 +163,7 @@ def pick_time_column(engine: Engine, cfg: Config, preferred: str) -> str:
             return c
     raise RuntimeError(
         f"Tidak menemukan kolom waktu pada {cfg.schema}.{cfg.t_members}. "
-        f"Coba pastikan ada salah satu kolom: {candidates}"
+        f"Pastikan ada salah satu kolom: {candidates}"
     )
 
 
@@ -173,33 +172,22 @@ def pick_time_column(engine: Engine, cfg: Config, preferred: str) -> str:
 # =========================
 
 def build_eligible_filter_for_clusters(rule: str, include_noise: bool) -> tuple[str, str]:
-    """
-    Return (sql_condition_using_c, effective_rule_label)
-    where sql_condition_using_c references alias 'c' and expects :window_days.
-    """
     noise_clause = "" if include_noise else "AND c.cluster_id <> -1"
 
     if rule == "all":
         return f"TRUE {noise_clause}", "all"
     if rule == "span_days_gt":
         return f"(COALESCE(c.span_days,0) > :window_days) {noise_clause}", "span_days_gt"
-    # default strict
     return f"((COALESCE(c.span_days,0) - :window_days) > 1) {noise_clause}", "span_days_strict"
 
 
 def build_eligible_filter_for_members_span(rule: str, include_noise: bool) -> tuple[str, str]:
-    """
-    Return (sql_condition_using_s, effective_rule_label)
-    where sql_condition_using_s references alias 's' (computed span_days) and expects :window_days.
-    span_days computed as (MAX(date) - MIN(date)) in days.
-    """
     noise_clause = "" if include_noise else "AND s.cluster_id <> -1"
 
     if rule == "all":
         return f"TRUE {noise_clause}", "all (computed span from members)"
     if rule == "span_days_gt":
         return f"(s.span_days > :window_days) {noise_clause}", "span_days_gt (computed span from members)"
-    # default strict
     return f"((s.span_days - :window_days) > 1) {noise_clause}", "span_days_strict (computed span from members)"
 
 
@@ -216,11 +204,6 @@ def load_members_for_window(
     include_noise: bool,
     eligible_rule: str,
 ) -> pd.DataFrame:
-    """
-    FINAL PATCH:
-    - Jika clusters punya span_days => eligible pakai table clusters (lebih cepat).
-    - Jika clusters tidak punya span_days => eligible dihitung dari members (MIN/MAX event_time per cluster).
-    """
     has_span = table_has_column(engine, cfg.schema, cfg.t_clusters, "span_days")
 
     optional_cols_sql = select_optional_text_cols(
@@ -256,7 +239,6 @@ def load_members_for_window(
             ORDER BY m.cluster_id, m.{time_col}, m.incident_number
         """)
     else:
-        # hitung span dari members (date-level) agar sejalan dengan sessionize()
         eligible_filter, eligible_rule_effective = build_eligible_filter_for_members_span(eligible_rule, include_noise)
 
         sql = text(f"""
@@ -291,19 +273,20 @@ def load_members_for_window(
             ORDER BY m.cluster_id, m.{time_col}, m.incident_number
         """)
 
+    # ✅ FIX KRITIS: params harus via keyword `params=...`
     df = pd.read_sql(
         sql,
         engine,
         params={"modeling_id": modeling_id, "window_days": int(window_days)},
     )
 
+    df.attrs["eligible_rule_effective"] = eligible_rule_effective
+
     if df.empty:
-        df.attrs["eligible_rule_effective"] = eligible_rule_effective
         return df
 
     df["event_time"] = pd.to_datetime(df["event_time"], errors="coerce")
     df = df.dropna(subset=["event_time"]).copy()
-    df.attrs["eligible_rule_effective"] = eligible_rule_effective
     return df
 
 
@@ -315,11 +298,12 @@ def sessionize(df: pd.DataFrame, window_days: int, time_col: str) -> pd.DataFram
     if df.empty:
         return df
 
-    out = df.copy()
+    # ✅ PATCH: sort eksplisit sebelum shift/gap
+    out = df.sort_values(["modeling_id", "cluster_id", "event_time", "incident_number"]).reset_index(drop=True).copy()
+
     out["window_days"] = int(window_days)
     out["time_col"] = str(time_col)
 
-    # evaluasi berbasis hari (date)
     out["tgl"] = out["event_time"].dt.date
     out["prev_tgl"] = out.groupby(["modeling_id", "cluster_id"])["tgl"].shift(1)
     out["gap_days"] = (pd.to_datetime(out["tgl"]) - pd.to_datetime(out["prev_tgl"])).dt.days
@@ -508,15 +492,26 @@ def run(
         eff_rule = df.attrs.get("eligible_rule_effective", eligible_rule)
 
         print(
-            f"[LOAD] window={w} | rows={len(df):,} | time_col={time_col} | "
-            f"eligible_rule={eff_rule} | include_noise={include_noise}"
+            f"\n=== WINDOW {w} DAYS ===\n"
+            f"[LOAD] rows={len(df):,} | time_col={time_col} | eligible_rule={eff_rule} | include_noise={include_noise}"
         )
 
         df_sess = sessionize(df, window_days=int(w), time_col=time_col)
-        print(
-            f"[SESSIONIZE] window={w} | rows_out={len(df_sess):,} | "
-            f"clusters={df_sess['cluster_id'].nunique() if not df_sess.empty else 0}"
-        )
+        n_clusters = int(df_sess["cluster_id"].nunique()) if not df_sess.empty else 0
+        print(f"[SESSIONIZE] rows_out={len(df_sess):,} | clusters={n_clusters:,}")
+
+        # ✅ SANITY CHECK: apakah window berpengaruh?
+        if not df_sess.empty:
+            gd = df_sess["gap_days"].dropna()
+            gd = gd[gd >= 0]  # aman
+            if not gd.empty:
+                print(
+                    f"[GAP DIST] n_gap={len(gd):,} | "
+                    f"<=7d={(gd<=7).mean()*100:.2f}% | "
+                    f"<=14d={(gd<=14).mean()*100:.2f}% | "
+                    f"<=30d={(gd<=30).mean()*100:.2f}% | "
+                    f">30d={(gd>30).mean()*100:.2f}%"
+                )
 
         save_sessionized(engine, cfg, df_sess)
         print(f"[SAVE] {cfg.schema}.{cfg.out_members} | window={w} | time_col={time_col}")
@@ -532,7 +527,7 @@ def run(
         upsert_summary(engine, cfg, summary)
         print(f"[SUMMARY] window={w} | {summary.to_dict(orient='records')[0]}")
 
-    print("[DONE] semantic temporal evaluation completed for windows:", list(cfg.windows), "| time_col:", time_col)
+    print("\n[DONE] semantic temporal evaluation completed for windows:", list(cfg.windows), "| time_col:", time_col)
 
 
 if __name__ == "__main__":

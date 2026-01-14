@@ -123,35 +123,47 @@ viewer_semantik_bert = st.Page("pages/data_preparation/feature_extraction/viewer
 tfidf_extraction = st.Page("pages/tfidf_extraction.py", title="TF-IDF Extraction", icon=":material/text_snippet:")
 # Modeling
 # Sintaksis
-modeling_sintaksis_pra_threshold = st.Page("pages/modeling/modeling_sintaksis_pra_threshold.py", title="Modeling Sintaksis Pra Threshold", icon=":material/hub:")
-modeling_sintaksis_viewer = st.Page("pages/modeling/modeling_sintaksis_viewer.py", title="Modeling Sintaksis Viewer", icon=":material/hub:")
-modeling_evaluasi_sintaksis = st.Page("pages/modeling/modeling_evaluasi_sintaksis.py", title="Modeling Evaluasi Sintaksis", icon=":material/hub:")
-modeling_sintaksis_temporal = st.Page("pages/modeling/modeling_sintaksis_temporal.py", title="Modeling Sintaksis Temporal", icon=":material/hub:")
+modeling_sintaksis_pra_threshold = st.Page("pages/modeling/modeling_sintaksis_pra_threshold.py", title="Cosine Similarity Pra Threshold", icon=":material/hub:")
+modeling_sintaksis_viewer = st.Page("pages/modeling/modeling_sintaksis_viewer.py", title="Cosine Similarity Threshold", icon=":material/hub:")
 # Semantik
 # modeling_semantik_embedding = st.Page("pages/modeling/modeling_semantik_embedding.py", title="Modeling Semantik Embedding", icon=":material/hub:")
 # modeling_semantik_hdbscan = st.Page("pages/modeling/modeling_semantik_hdbscan.py", title="Modeling Semantik HDBSCAN", icon=":material/hub:")
-modeling_semantik_hdbscan_viewer = st.Page("pages/modeling/modeling_semantik_hdbscan_viewer.py", title="Modeling Semantik HBSCAN Viewer", icon=":material/hub:")
-modeling_semantik_temporal = st.Page("pages/modeling/modeling_semantik_temporal.py", title="Modeling Semantik Temporal", icon=":material/hub:")
-modeling_evaluasi_dbcv = st.Page("pages/modeling/modeling_evaluasi_dbcv.py", title="Modeling Semantik Evaluasi DBCV", icon=":material/hub:")
+modeling_semantik_hdbscan_viewer = st.Page("pages/modeling/modeling_semantik_hdbscan_viewer.py", title="HBSCAN Viewer", icon=":material/hub:")
 # Evaluasi Modeling Sintaksis dan Semantik
-modeling_evaluasi_temporal_sintaksis = st.Page("pages/modeling/modeling_evaluasi_temporal_sintaksis.py", title="Modeling Evaluasi Temporal Sintaksis", icon=":material/hub:")
-modeling_evaluasi_temporal_semantik = st.Page("pages/modeling/modeling_evaluasi_temporal_semantik.py", title="Modeling Evaluasi Temporal Semantik", icon=":material/hub:")
+modeling_evaluasi_dbcv = st.Page("pages/modeling/modeling_evaluasi_dbcv.py", title="Evaluasi DBCV", icon=":material/hub:")
+modeling_evaluasi_sc_dbi_sintaksis = st.Page("pages/modeling/modeling_evaluasi_sc_dbi_sintaksis.py", title="Evaluasi Sintaksis Silhouette Score & DBI", icon=":material/hub:")
+modeling_evaluasi_sc_dbi_semantik = st.Page("pages/modeling/modeling_evaluasi_sc_dbi_semantik.py", title="Evaluasi Semantik Silhouette Score & DBI", icon=":material/hub:")
+modeling_evaluasi = st.Page("pages/modeling/modeling_evaluasi_final.py", title="Evaluasi Modeling", icon=":material/hub:")
+modeling_evaluasi_temporal = st.Page("pages/modeling/modeling_evaluasi_temporal.py", title="Evaluasi Temporal", icon=":material/hub:")
+modeling_evaluasi_temporal_sintaksis = st.Page("pages/modeling/modeling_evaluasi_temporal_sintaksis.py", title="Evaluasi Temporal Sintaksis", icon=":material/hub:")
+modeling_evaluasi_temporal_semantik = st.Page("pages/modeling/modeling_evaluasi_temporal_semantik.py", title="Evaluasi Temporal Semantik", icon=":material/hub:")
 modeling_evaluasi_compare = st.Page("pages/modeling/modeling_evaluasi_compare.py", title="Perbandingan Hasil Evaluasi Temporal Sintaksis vs Semantik", icon=":material/hub:")
+modeling_hasil_evaluasi = st.Page("pages/modeling/modeling_hasil_evaluasi.py", title="Hasil Evaluasi Modeling", icon=":material/hub:")
+# Labeling
+labeling_temporal = st.Page("pages/labeling/labeling_temporal_rule.py", title="Labeling Tiket Insiden", icon=":material/label:")
+labeling_topic_cluster = st.Page("pages/labeling/labeling_topic_cluster.py", title="Labeling Topic Cluster", icon=":material/label:")
+labeling_viewer_topic_cluster = st.Page("pages/labeling/viewer_topic_cluster.py", title="Viewer Topic Cluster", icon=":material/label:")
+labeling_utility = st.Page("pages/labeling/labeling_utility.py", title="Labeling Utility", icon=":material/label:")
+# Prediction
+load_dataset_prediction = st.Page("pages/prediction/load_dataset_prediction.py", title="Load Dataset Prediction", icon=":material/hub:")
+# Evaluation
+evaluation_manual_labeling = st.Page("pages/evaluation/evaluation_manual_labeling.py", title="Evaluation Manual Labeling", icon=":material/hub:")
 # Modeling - 1
 modeling_sintaksis = st.Page("pages/modeling/modeling_sintaksis.py", title="Modeling Sintaksis", icon=":material/hub:")
 modeling_sintaksis_visualisasi = st.Page("pages/modeling/modeling_sintaksis_visualisasi.py", title="Modeling Sintaksis Visualisasi", icon=":material/hub:")
 modeling_sintaksis_timeline = st.Page("pages/modeling/modeling_sintaksis_timeline.py", title="Modeling Sintaksis Timeline", icon=":material/hub:")
 sintaksis_cosine = st.Page("pages/modeling_sintaksis_cosine.py", title="Sintaksis Cosine", icon=":material/hub:")
 sintaksis_summary = st.Page("pages/modeling_sintaksis_summary.py", title="Sintaksis Summary", icon=":material/hub:")
-#evaluasi_sintaksis = st.Page("pages/modeling_evaluasi_sintaksis.py", title="Evaluasi Pendekatan Sintaksis", icon=":material/hub:")
 evaluasi_tsne = st.Page("pages/modeling_visualisasi_tsne.py", title="Evaluasi t-SNE", icon=":material/hub:")
 evaluasi_cosine_treshold = st.Page("pages/modeling_evaluasi_cosine_threshold.py", title="Evaluasi Cosine Threshold", icon=":material/hub:")
-modeling_evaluasi = st.Page("pages/modeling_evaluasi.py", title="Modeling Evaluasi", icon=":material/hub:")
+modeling_evaluasi_1 = st.Page("pages/modeling_evaluasi.py", title="Modeling Evaluasi", icon=":material/hub:")
 # Modeling Sintaksis TF-IDF Unigram
 modeling_sintaksis_tfidf_unigram = st.Page("pages/modeling_sintaksis_tfidf_unigram_viewer.py", title="Modeling Sintaksis TF-IDF Unigram", icon=":material/hub:")
 # Evaluasi
 evaluation_sintaksis = st.Page("pages/evaluation_sintaksis.py", title="Evaluation Sintaksis", icon=":material/hub:")
 # Analisis
+modeling_semantik_temporal = st.Page("pages/modeling/modeling_semantik_temporal.py", title="Modeling Semantik Temporal", icon=":material/hub:")
+modeling_sintaksis_temporal = st.Page("pages/modeling/modeling_sintaksis_temporal.py", title="Modeling Sintaksis Temporal", icon=":material/hub:")
 analisis_sintaksis = st.Page("pages/analisis_sintaksis.py", title="Analisis Sintaksis", icon=":material/123:")
 analisis_semantik = st.Page("pages/analisis_semantik.py", title="Analisis Semantik", icon=":material/psychology:")
 cluster_dashboard = st.Page("pages/cluster_dashboard.py", title="Cluster Dashboard", icon=":material/bubble_chart:")
@@ -175,9 +187,12 @@ if ss.logged_in:
             "🧹 Feature Extraction": [viewer_sintaksis_tfidf, viewer_semantik_bert],
             "📂 Modeling Sintaksis": [modeling_sintaksis_pra_threshold, modeling_sintaksis_viewer],
             "📂 Modeling Semantik": [modeling_semantik_hdbscan_viewer],
-            "📂 Modeling Evaluasi Sintaksis & Semantik": [modeling_evaluasi_dbcv, modeling_evaluasi_temporal_sintaksis, modeling_evaluasi_temporal_semantik, modeling_evaluasi_compare],
-            "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
-            "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram, modeling_evaluasi_sintaksis],
+            "📂 Modeling Evaluasi Sintaksis & Semantik": [modeling_evaluasi_dbcv, modeling_evaluasi_sc_dbi_sintaksis, modeling_evaluasi_sc_dbi_semantik, modeling_evaluasi, modeling_evaluasi_temporal, modeling_evaluasi_temporal_sintaksis, modeling_evaluasi_temporal_semantik, modeling_evaluasi_compare, modeling_hasil_evaluasi],
+            "📂 Labeling": [labeling_temporal, labeling_utility, labeling_viewer_topic_cluster],
+            "📂 Prediction": [load_dataset_prediction],
+            "📂 Evaluasi": [evaluation_manual_labeling],
+            "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi_1, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
+            "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram],
             "📂 Evaluation": [evaluation_sintaksis],
             "🧮 Analisis": [tfidf_extraction, analisis_sintaksis, analisis_semantik, modeling_sintaksis_temporal, modeling_semantik_temporal],
             "🧮 Eksperimental": [venn_diagram, semantik_chart],
