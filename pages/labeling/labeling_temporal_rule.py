@@ -5,25 +5,25 @@
 # - Basis: temporal_members (hasil evaluasi temporal / sessionization)
 # - Output unified: lasis_djp.incident_labeling_results
 #
-# FINAL PATCH (mengatasi gap sintaksis vs semantik + bug episode singleton):
+# FINAL (v2) - +Ringkasan Episode Berulang (episode berisi >1 tiket)
 # 1) Label tidak hanya berbasis cluster, tapi juga episode:
 #    label_berulang = 1 jika:
 #      - n_member_cluster >= N_min_cluster
 #      - n_episode_cluster >= E_min_cluster
 #      - n_member_episode >= N_min_episode  (mencegah episode singleton dianggap berulang)
 #
-# 2) JOIN cluster_stats & episode_stats diperkuat dengan key run lengkap:
-#    - Sintaksis: (job_id, modeling_id, window_days, cluster_id)
-#    - Semantik : (modeling_id, window_days, time_col, cluster_id)
-#
-# 3) Noise semantik dikendalikan sesuai include_noise:
+# 2) Noise semantik dikendalikan sesuai include_noise:
 #    - include_noise=False → cluster_id=-1 dikecualikan pada stats & rows
 #
-# 4) Self-healing schema:
+# 3) Self-healing schema:
 #    - ADD COLUMN IF NOT EXISTS n_member_episode (untuk tabel lama)
 #
+# 4) Tambahan analisis:
+#    - jumlah_episode_berulang = jumlah episode (temporal_cluster_no) dengan >1 tiket pada cluster_id
+#    - jumlah_tiket_episode_berulang = total tiket dari episode berulang saja
+#
 # Catatan teknis:
-# - time_col NOT NULL DEFAULT '' untuk PK/ON CONFLICT (Postgres melarang expression di PK)
+# - time_col NOT NULL DEFAULT '' untuk PK/ON CONFLICT
 # - Hindari :param::uuid → pakai CAST(:param AS uuid)
 # ============================================================
 
@@ -130,12 +130,12 @@ def ensure_output_table(engine) -> None:
             PRIMARY KEY (jenis_pendekatan, modeling_id, window_days, incident_number, time_col)
     );
     """
-
     with engine.begin() as conn:
         conn.execute(text(ddl))
 
         # ✅ self-healing migration: add episode-size column (for old tables)
         conn.execute(text(f"ALTER TABLE {T_LABEL} ADD COLUMN IF NOT EXISTS n_member_episode bigint;"))
+        # NOTE: update massal bisa berat kalau tabel besar; tapi tetap dipertahankan sesuai versi kamu.
         conn.execute(text(f"UPDATE {T_LABEL} SET n_member_episode = 1 WHERE n_member_episode IS NULL;"))
         conn.execute(text(f"ALTER TABLE {T_LABEL} ALTER COLUMN n_member_episode SET DEFAULT 1;"))
         conn.execute(text(f"ALTER TABLE {T_LABEL} ALTER COLUMN n_member_episode SET NOT NULL;"))
@@ -291,19 +291,21 @@ st.write(
     }
 )
 
-col1, col2, col3 = st.columns([1, 1, 1])
+col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 with col1:
     preview_limit = st.number_input("Preview rows", min_value=50, value=200, step=50)
 with col2:
-    do_replace = st.checkbox("Replace hasil sebelumnya untuk run ini", value=False)
+    do_replace = st.checkbox("Replace (hapus dulu run ini, lalu tulis ulang)", value=False)
 with col3:
     do_write = st.checkbox("Tulis ke database", value=True)
+with col4:
+    topk_cluster = st.number_input("Top-K cluster (ringkasan)", min_value=10, value=30, step=10)
 
 st.markdown("---")
 
 
 # ======================================================
-# 🩺 Diagnostics: jelaskan gap semantik vs sintaksis
+# 🩺 Diagnostics
 # ======================================================
 def diagnostics_sintaksis() -> pd.DataFrame:
     sql = f"""
@@ -351,6 +353,107 @@ with st.expander("🩺 Diagnostics (coverage / noise / null time)", expanded=Tru
             "Jika include_noise=False tapi n_ticket_noise besar, noise memang banyak di hasil HDBSCAN. "
             "Halaman ini memfilter noise saat stats & saat pelabelan."
         )
+
+st.markdown("---")
+
+
+# ======================================================
+# 📌 Ringkasan Episode Berulang (episode berisi >1 tiket)
+# ======================================================
+def summary_repeat_episode_sintaksis(limit_top: int) -> pd.DataFrame:
+    sql = f"""
+    WITH base AS (
+      SELECT
+        cluster_id,
+        temporal_cluster_no,
+        COUNT(DISTINCT incident_number)::bigint AS n_tiket_episode
+      FROM {T_SYN_MEM}
+      WHERE job_id = CAST(:job_id AS uuid)
+        AND modeling_id = CAST(:modeling_id AS uuid)
+        AND window_days = :window_days
+      GROUP BY cluster_id, temporal_cluster_no
+    )
+    SELECT
+      cluster_id,
+      SUM(n_tiket_episode)::bigint AS jumlah_tiket,
+      COUNT(*)::bigint AS jumlah_episode,
+      COUNT(*) FILTER (WHERE n_tiket_episode > 1)::bigint AS jumlah_episode_berulang,
+      COALESCE(SUM(n_tiket_episode) FILTER (WHERE n_tiket_episode > 1), 0)::bigint AS jumlah_tiket_episode_berulang
+    FROM base
+    GROUP BY cluster_id
+    HAVING COUNT(*) FILTER (WHERE n_tiket_episode > 1) > 0
+    ORDER BY jumlah_tiket_episode_berulang DESC, jumlah_episode_berulang DESC, jumlah_tiket DESC, cluster_id ASC
+    LIMIT :lim;
+    """
+    return read_df(
+        engine,
+        sql,
+        {
+            "job_id": job_id,
+            "modeling_id": modeling_id,
+            "window_days": window_days,
+            "lim": int(limit_top),
+        },
+    )
+
+
+def summary_repeat_episode_semantik(limit_top: int) -> pd.DataFrame:
+    sql = f"""
+    WITH base AS (
+      SELECT
+        cluster_id,
+        temporal_cluster_no,
+        COUNT(DISTINCT incident_number)::bigint AS n_tiket_episode
+      FROM {T_SEM_MEM}
+      WHERE modeling_id = CAST(:modeling_id AS uuid)
+        AND window_days = :window_days
+        AND time_col = :time_col
+        AND ( :include_noise OR cluster_id <> -1 )
+      GROUP BY cluster_id, temporal_cluster_no
+    )
+    SELECT
+      cluster_id,
+      SUM(n_tiket_episode)::bigint AS jumlah_tiket,
+      COUNT(*)::bigint AS jumlah_episode,
+      COUNT(*) FILTER (WHERE n_tiket_episode > 1)::bigint AS jumlah_episode_berulang,
+      COALESCE(SUM(n_tiket_episode) FILTER (WHERE n_tiket_episode > 1), 0)::bigint AS jumlah_tiket_episode_berulang
+    FROM base
+    GROUP BY cluster_id
+    HAVING COUNT(*) FILTER (WHERE n_tiket_episode > 1) > 0
+    ORDER BY jumlah_tiket_episode_berulang DESC, jumlah_episode_berulang DESC, jumlah_tiket DESC, cluster_id ASC
+    LIMIT :lim;
+    """
+    return read_df(
+        engine,
+        sql,
+        {
+            "modeling_id": modeling_id,
+            "window_days": window_days,
+            "time_col": time_col,
+            "include_noise": bool(include_noise),
+            "lim": int(limit_top),
+        },
+    )
+
+
+with st.expander("📌 Ringkasan Cluster dengan Episode Berulang (episode >1 tiket)", expanded=False):
+    st.caption(
+        "Definisi di sini: episode berulang = episode (temporal_cluster_no) yang berisi >1 tiket. "
+        "Tabel ini otomatis mengabaikan cluster yang tidak punya episode berulang."
+    )
+    if pendekatan == "sintaksis":
+        df_sum = summary_repeat_episode_sintaksis(int(topk_cluster))
+    else:
+        df_sum = summary_repeat_episode_semantik(int(topk_cluster))
+
+    if df_sum.empty:
+        st.info("Tidak ada cluster dengan episode berulang (episode berisi >1 tiket) untuk run ini.")
+    else:
+        st.dataframe(df_sum, use_container_width=True, hide_index=True)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Cluster berulang (episode>1 tiket)", f"{df_sum['cluster_id'].nunique():,}")
+        c2.metric("Total tiket (di cluster berulang)", f"{int(df_sum['jumlah_tiket'].sum()):,}")
+        c3.metric("Total tiket episode berulang", f"{int(df_sum['jumlah_tiket_episode_berulang'].sum()):,}")
 
 st.markdown("---")
 
@@ -458,7 +561,6 @@ def preview_labeling_sintaksis(limit: int) -> pd.DataFrame:
 
 
 def preview_labeling_semantik(limit: int) -> pd.DataFrame:
-    # Noise filter mengikuti include_noise
     noise_rows = "TRUE" if bool(include_noise) else "m.cluster_id <> -1"
     noise_stats = "TRUE" if bool(include_noise) else "cluster_id <> -1"
 

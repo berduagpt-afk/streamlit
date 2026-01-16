@@ -148,6 +148,8 @@ labeling_utility = st.Page("pages/labeling/labeling_utility.py", title="Labeling
 load_dataset_prediction = st.Page("pages/prediction/load_dataset_prediction.py", title="Load Dataset Prediction", icon=":material/hub:")
 statistik_dataset_prediction = st.Page("pages/prediction/statistik_dataset_prediction.py", title="Statistik Dataset Prediction", icon=":material/monitoring:")
 training_prediction = st.Page("pages/prediction/training_prediction.py", title="Training Prediction", icon=":material/hub:")
+prediction_model_evaluation = st.Page("pages/prediction/prediction_model_evaluation.py", title="Prediction Model Evaluation", icon=":material/hub:")
+prediction_upload_predict = st.Page("pages/prediction/prediction_upload_predict.py", title="Prediction Upload Predict", icon=":material/hub:")
 # Evaluation
 evaluation_manual_labeling = st.Page("pages/evaluation/evaluation_manual_labeling.py", title="Evaluation Manual Labeling", icon=":material/hub:")
 # Modeling - 1
@@ -191,7 +193,7 @@ if ss.logged_in:
             "📂 Modeling Semantik": [modeling_semantik_hdbscan_viewer],
             "📂 Modeling Evaluasi Sintaksis & Semantik": [modeling_evaluasi_dbcv, modeling_evaluasi_sc_dbi_sintaksis, modeling_evaluasi_sc_dbi_semantik, modeling_evaluasi, modeling_evaluasi_temporal, modeling_evaluasi_temporal_sintaksis, modeling_evaluasi_temporal_semantik, modeling_evaluasi_compare, modeling_hasil_evaluasi],
             "📂 Labeling": [labeling_temporal, labeling_utility, labeling_viewer_topic_cluster],
-            "📂 Prediction": [load_dataset_prediction, statistik_dataset_prediction, training_prediction],
+            "📂 Prediction": [load_dataset_prediction, statistik_dataset_prediction, training_prediction, prediction_model_evaluation, prediction_upload_predict],
             "📂 Evaluasi": [evaluation_manual_labeling],
             "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi_1, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
             "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram],
