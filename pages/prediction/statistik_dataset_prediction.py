@@ -75,7 +75,7 @@ def is_truthy(v) -> bool:
 # ======================================================
 # 📌 Page
 # ======================================================
-st.set_page_config(page_title="Statistik Dataset Supervised", layout="wide")
+# st.set_page_config(page_title="Statistik Dataset Supervised", layout="wide")
 st.title("📊 Statistik Dataset Supervised")
 st.caption(
     "Halaman ini menampilkan ringkasan statistik, distribusi label, split train/test, karakteristik temporal/cluster, "
