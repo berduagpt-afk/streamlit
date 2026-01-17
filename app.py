@@ -150,6 +150,8 @@ statistik_dataset_prediction = st.Page("pages/prediction/statistik_dataset_predi
 training_prediction = st.Page("pages/prediction/training_prediction.py", title="Training Prediction", icon=":material/hub:")
 prediction_model_evaluation = st.Page("pages/prediction/prediction_model_evaluation.py", title="Prediction Model Evaluation", icon=":material/hub:")
 prediction_upload_predict = st.Page("pages/prediction/prediction_upload_predict.py", title="Prediction Upload Predict", icon=":material/hub:")
+prediction_predict_split_test = st.Page("pages/prediction/prediction_predict_split_test.py", title="Prediction Predict Split Test", icon=":material/hub:")
+prediction_evaluation = st.Page("pages/prediction/prediction_evaluation.py", title="Prediction Evaluation", icon=":material/hub:")
 # Evaluation
 evaluation_manual_labeling = st.Page("pages/evaluation/evaluation_manual_labeling.py", title="Evaluation Manual Labeling", icon=":material/hub:")
 # Modeling - 1
@@ -193,13 +195,13 @@ if ss.logged_in:
             "📂 Modeling Semantik": [modeling_semantik_hdbscan_viewer],
             "📂 Modeling Evaluasi Sintaksis & Semantik": [modeling_evaluasi_dbcv, modeling_evaluasi_sc_dbi_sintaksis, modeling_evaluasi_sc_dbi_semantik, modeling_evaluasi, modeling_evaluasi_temporal, modeling_evaluasi_temporal_sintaksis, modeling_evaluasi_temporal_semantik, modeling_evaluasi_compare, modeling_hasil_evaluasi],
             "📂 Labeling": [labeling_temporal, labeling_utility, labeling_viewer_topic_cluster],
-            "📂 Prediction": [load_dataset_prediction, statistik_dataset_prediction, training_prediction, prediction_model_evaluation, prediction_upload_predict],
-            "📂 Evaluasi": [evaluation_manual_labeling],
-            "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi_1, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
-            "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram],
-            "📂 Evaluation": [evaluation_sintaksis],
-            "🧮 Analisis": [tfidf_extraction, analisis_sintaksis, analisis_semantik, modeling_sintaksis_temporal, modeling_semantik_temporal],
-            "🧮 Eksperimental": [venn_diagram, semantik_chart],
+            "📂 Prediction": [load_dataset_prediction, statistik_dataset_prediction, training_prediction, prediction_model_evaluation, prediction_upload_predict, prediction_predict_split_test],
+            "📂 Evaluation": [prediction_evaluation, evaluation_manual_labeling],
+            # "📂 Modeling - 1": [sintaksis_cosine, sintaksis_summary, evaluasi_tsne, evaluasi_cosine_treshold, modeling_evaluasi_1, modeling_sintaksis, modeling_sintaksis_visualisasi, modeling_sintaksis_timeline ],
+            # "📂 Modeling Sintaksis - 1": [modeling_sintaksis_tfidf_unigram],
+            # "📂 Evaluation": [evaluation_sintaksis],
+            # "🧮 Analisis": [tfidf_extraction, analisis_sintaksis, analisis_semantik, modeling_sintaksis_temporal, modeling_semantik_temporal],
+            # "🧮 Eksperimental": [venn_diagram, semantik_chart],
             "📊 Dashboard": [cluster_dashboard, exec_summary, reporting_summary],
             "👤 Account": [logout_page],
         }
